@@ -1,0 +1,174 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String
+  avatar           String?
+  provider         String    @default("TIKTOK") // TIKTOK, GOOGLE, FACEBOOK
+  phone            String?   // Bolivia +591, 8 digits (WhatsApp/SMS)
+  city             String?   @default("Santa Cruz de la Sierra")
+  zone             String?
+  address          String?
+  addressReference String?
+  nitOrCi          String?   // Billing Document
+  interestProfile  String?   // JSON string of user interest data
+  savedCart        String?   // JSON of active cart items
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  orders           Order[]
+}
+
+model Store {
+  id             String         @id @default(cuid())
+  name           String
+  slug           String         @unique
+  logo           String
+  banner         String?
+  description    String?
+  rating         Float          @default(4.8)
+  reviewCount    Int            @default(0)
+  salesCount     Int            @default(0)
+  isOfficial     Boolean        @default(false)
+  isRecommended  Boolean        @default(false)
+  category       String
+  address        String
+  latitude       Float          @default(-17.7833)
+  longitude      Float          @default(-63.1821)
+  phone          String?
+  tiktokUsername String?
+  tiktokLiveUrl  String?
+  isLiveNow      Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  offers         ProductOffer[]
+  liveStreams    LiveStream[]
+  orderItems     OrderItem[]
+}
+
+model Category {
+  id       String    @id @default(cuid())
+  name     String
+  slug     String    @unique
+  icon     String
+  order    Int       @default(0)
+  products Product[]
+}
+
+model Product {
+  id              String         @id @default(cuid())
+  title           String
+  slug            String         @unique
+  description     String
+  basePrice       Float
+  discountPercent Int?           @default(0)
+  categoryId      String
+  category        Category       @relation(fields: [categoryId], references: [id])
+  rating          Float          @default(4.7)
+  reviewCount     Int            @default(0)
+  images          String         // JSON array of image URLs
+  tags            String?        // Comma separated tags
+  specifications  String?        // JSON string of key-value pairs
+  color           String?
+  material        String?
+  warranty        String?        @default("7 días")
+  hasInvoice      Boolean        @default(true)
+  isFlashSale     Boolean        @default(false)
+  flashSaleEnd    DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  offers          ProductOffer[]
+}
+
+model ProductOffer {
+  id                String      @id @default(cuid())
+  productId         String
+  product           Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  storeId           String
+  store             Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  price             Float
+  stock             Int         @default(10)
+  shippingCost      Float       @default(0)
+  estimatedDelivery String      @default("Llega mañana")
+  isRecommended     Boolean     @default(false)
+  isActive          Boolean     @default(true)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  orderItems        OrderItem[]
+
+  @@unique([productId, storeId])
+}
+
+model LiveStream {
+  id                 String    @id @default(cuid())
+  storeId            String
+  store              Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  title              String
+  streamerName       String
+  streamerAvatar     String
+  viewerCount        Int       @default(1200)
+  likeCount          Int       @default(4500)
+  status             String    @default("LIVE") // LIVE, ENDED
+  streamVideoUrl     String?
+  tiktokUrl          String?
+  featuredProductIds String?   // Comma separated product IDs
+  startedAt          DateTime  @default(now())
+}
+
+model Order {
+  id                  String      @id @default(cuid())
+  orderNumber         String      @unique
+  userId              String?
+  user                User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  customerName        String
+  customerEmail       String
+  customerPhone       String
+  customerAddress     String
+  customerLat         Float       @default(-17.7785)
+  customerLng         Float       @default(-63.1812)
+  paymentMethod       String      @default("QR_SIMPLE") // QR_SIMPLE, CREDIT_CARD, TIGO_MONEY
+  paymentStatus       String      @default("PAID")      // PAID, PENDING, FAILED
+  totalAmount         Float
+  subtotal            Float
+  shippingFee         Float       @default(0)
+  status              String      @default("CONFIRMED") // CONFIRMED, PREPARING, DSP_DISPATCHED, IN_TRANSIT, DELIVERED, CANCELLED
+  dspQuoteId          String?
+  dspOrderId          String?
+  dspTrackingToken    String?
+  dspDriverName       String?     @default("Carlos Mendoza")
+  dspDriverPhone      String?     @default("+591 77012345")
+  dspDriverRating     Float?      @default(4.9)
+  dspDriverPhoto      String?
+  dspEstimatedMinutes Int?        @default(20)
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  items               OrderItem[]
+}
+
+model OrderItem {
+  id             String        @id @default(cuid())
+  orderId        String
+  order          Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productOfferId String?
+  productOffer   ProductOffer? @relation(fields: [productOfferId], references: [id], onDelete: SetNull)
+  storeId        String
+  store          Store         @relation(fields: [storeId], references: [id])
+  productTitle   String
+  storeName      String
+  quantity       Int           @default(1)
+  unitPrice      Float
+  subtotal       Float
+  productImage   String?
+}

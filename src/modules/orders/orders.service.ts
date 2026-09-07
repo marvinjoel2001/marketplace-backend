@@ -110,6 +110,11 @@ export class OrdersService {
     const parsedShippingFee = typeof shippingFee === 'string' ? parseFloat(shippingFee) : shippingFee;
     const totalAmount = subtotal + parsedShippingFee;
 
+    // Split financiero: 5% comisión Marketplace, 95% para la tienda
+    const commissionRate = 0.05;
+    const platformCommission = Number((subtotal * commissionRate).toFixed(2));
+    const vendorEarnings = Number((subtotal * (1 - commissionRate)).toFixed(2));
+
     // Obtener datos de la tienda para la recogida
     const primaryItem = items[0];
     const storeLat = primaryItem.storeLat || -17.7685;
@@ -148,6 +153,8 @@ export class OrdersService {
         totalAmount,
         subtotal,
         shippingFee: parsedShippingFee,
+        platformCommission,
+        vendorEarnings,
         status: 'IN_TRANSIT',
         dspQuoteId: quoteId,
         dspOrderId: dspResponse.dspOrderId,
@@ -175,4 +182,69 @@ export class OrdersService {
       },
     });
   }
+
+  async updateStatus(idOrNumber: string, newStatus: string) {
+    const validStatuses = ['PENDING', 'CONFIRMED', 'PREPARING', 'DSP_DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'];
+    if (!validStatuses.includes(newStatus)) {
+      throw new BadRequestException(`Estado no válido: ${newStatus}. Estados válidos: ${validStatuses.join(', ')}`);
+    }
+
+    const order = await this.prisma.order.findFirst({
+      where: {
+        OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }],
+      },
+      include: { items: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Orden ${idOrNumber} no encontrada`);
+    }
+
+    if (order.status === 'CANCELLED' && newStatus !== 'CANCELLED') {
+      throw new BadRequestException('No se puede modificar el estado de una orden cancelada');
+    }
+
+    const updatedOrder = await this.prisma.order.update({
+      where: { id: order.id },
+      data: { status: newStatus },
+      include: { items: true },
+    });
+
+    // Si el estado pasa a DELIVERED, abonar las ganancias a la billetera de la tienda
+    if (newStatus === 'DELIVERED' && order.status !== 'DELIVERED' && order.vendorEarnings) {
+      const primaryStoreId = order.items?.[0]?.storeId;
+      if (primaryStoreId) {
+        const store = await this.prisma.store.findUnique({ where: { id: primaryStoreId } });
+        if (store) {
+          await this.prisma.store.update({
+            where: { id: primaryStoreId },
+            data: {
+              walletBalance: Number((store.walletBalance + order.vendorEarnings).toFixed(2)),
+              salesCount: store.salesCount + 1,
+            },
+          });
+        }
+      }
+    }
+
+    return updatedOrder;
+  }
+
+  async handleDspWebhook(payload: any) {
+    const { event, orderId, externalOrderId, status } = payload;
+    const orderRef = externalOrderId || orderId;
+
+    if (!orderRef) {
+      throw new BadRequestException('Webhook payload sin referencia de orden');
+    }
+
+    const targetStatus = status === 'DELIVERED' || event === 'order.delivered'
+      ? 'DELIVERED'
+      : status === 'PICKED_UP' || event === 'order.in_transit'
+        ? 'IN_TRANSIT'
+        : status || 'DSP_DISPATCHED';
+
+    return this.updateStatus(orderRef, targetStatus);
+  }
 }
+

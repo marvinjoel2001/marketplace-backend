@@ -13,6 +13,12 @@ describe('ProductsService', () => {
       findUnique: jest.fn(),
       findFirst: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    },
+    productOffer: {
+      findFirst: jest.fn(),
+      update: jest.fn(),
     },
   };
 
@@ -87,4 +93,60 @@ describe('ProductsService', () => {
       );
     });
   });
+
+  describe('update & updateStock (TC-SYNC-001)', () => {
+    it('debería actualizar datos del producto', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        id: 'p1',
+        offers: [{ id: 'off-1', storeId: 'store-1' }],
+      });
+      mockPrisma.product.update.mockResolvedValue({
+        id: 'p1',
+        title: 'iPhone 15 Pro Max Actualizado',
+        basePrice: 8500,
+      });
+
+      const res = await service.update('p1', {
+        title: 'iPhone 15 Pro Max Actualizado',
+        basePrice: 8500,
+      });
+
+      expect(res.title).toBe('iPhone 15 Pro Max Actualizado');
+      expect(mockPrisma.product.update).toHaveBeenCalled();
+    });
+
+    it('debería actualizar stock de producto por tienda', async () => {
+      mockPrisma.productOffer.findFirst.mockResolvedValue({
+        id: 'off-1',
+        productId: 'p1',
+        storeId: 'store-1',
+        stock: 5,
+      });
+      mockPrisma.productOffer.update.mockResolvedValue({
+        id: 'off-1',
+        stock: 12,
+        price: 8400,
+      });
+
+      const res = await service.updateStock('p1', 'store-1', 12, 8400);
+      expect(res.stock).toBe(12);
+      expect(mockPrisma.productOffer.update).toHaveBeenCalledWith({
+        where: { id: 'off-1' },
+        data: { stock: 12, price: 8400 },
+        include: { product: true, store: true },
+      });
+    });
+  });
+
+  describe('delete', () => {
+    it('debería eliminar producto existente', async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({ id: 'p1' });
+      mockPrisma.product.delete.mockResolvedValue({ id: 'p1' });
+
+      const res = await service.delete('p1');
+      expect(res.success).toBe(true);
+      expect(mockPrisma.product.delete).toHaveBeenCalledWith({ where: { id: 'p1' } });
+    });
+  });
 });
+

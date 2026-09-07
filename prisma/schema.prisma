@@ -47,12 +47,14 @@ model Store {
   tiktokUsername String?
   tiktokLiveUrl  String?
   isLiveNow      Boolean        @default(false)
+  walletBalance  Float          @default(0)
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
   offers         ProductOffer[]
   liveStreams    LiveStream[]
   orderItems     OrderItem[]
+  cashShifts     CashShift[]
 }
 
 model Category {
@@ -151,6 +153,8 @@ model Order {
   dspDriverRating     Float?      @default(4.9)
   dspDriverPhoto      String?
   dspEstimatedMinutes Int?        @default(20)
+  platformCommission  Float?      @default(0)
+  vendorEarnings      Float?      @default(0)
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 
@@ -172,3 +176,35 @@ model OrderItem {
   subtotal       Float
   productImage   String?
 }
+
+model CashShift {
+  id             String         @id @default(cuid())
+  storeId        String
+  store          Store          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  cashierName    String
+  initialCash    Float          @default(0)
+  expectedCash   Float          @default(0)
+  actualCash     Float?
+  difference     Float?
+  totalSalesCash Float          @default(0)
+  totalSalesQr   Float          @default(0)
+  totalSalesCard Float          @default(0)
+  totalExpenses  Float          @default(0)
+  status         String         @default("OPEN") // OPEN, CLOSED
+  openedAt       DateTime       @default(now())
+  closedAt       DateTime?
+  notes          String?
+  movements      CashMovement[]
+}
+
+model CashMovement {
+  id          String    @id @default(cuid())
+  shiftId     String
+  shift       CashShift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  type        String    // SALE_CASH, SALE_QR, SALE_CARD, EXPENSE, WITHDRAWAL
+  amount      Float
+  description String
+  referenceId String?   // Order ID or receipt #
+  createdAt   DateTime  @default(now())
+}
+

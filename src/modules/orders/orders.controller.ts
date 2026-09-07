@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, Query, Body } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Param, Query, Body } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 
 @Controller('orders')
@@ -19,4 +19,18 @@ export class OrdersController {
   async create(@Body() body: any) {
     return this.ordersService.create(body);
   }
+
+  @Patch(':id/status')
+  async updateStatus(
+    @Param('id') id: string,
+    @Body('status') status: string,
+  ) {
+    return this.ordersService.updateStatus(id, status);
+  }
+
+  @Post('webhook/dsp')
+  async handleDspWebhook(@Body() payload: any) {
+    return this.ordersService.handleDspWebhook(payload);
+  }
 }
+

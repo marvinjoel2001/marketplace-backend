@@ -9,6 +9,8 @@ import { OrdersModule } from './modules/orders/orders.module';
 import { DspModule } from './modules/dsp/dsp.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { CashRegisterModule } from './modules/cash-register/cash-register.module';
+import { UploadModule } from './modules/upload/upload.module';
 
 @Module({
   imports: [
@@ -22,6 +24,8 @@ import { AuthModule } from './modules/auth/auth.module';
     DspModule,
     AdminModule,
     AuthModule,
+    CashRegisterModule,
+    UploadModule,
   ],
 })
 export class AppModule {}

@@ -1,4 +1,4 @@
-import { Controller, Post, Body, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, BadRequestException } from '@nestjs/common';
 import { DspService } from './dsp.service';
 
 @Controller('dsp')
@@ -20,4 +20,10 @@ export class DspController {
       dropoffLng: parseFloat(dropoffLng),
     });
   }
+
+  @Get('track/:token')
+  async getTracking(@Param('token') token: string) {
+    return this.dspService.getTracking(token);
+  }
 }
+

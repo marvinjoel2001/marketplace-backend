@@ -21,6 +21,9 @@ model User {
   nitOrCi          String?   // Billing Document
   interestProfile  String?   // JSON string of user interest data
   savedCart        String?   // JSON of active cart items
+  role             String    @default("CUSTOMER") // CUSTOMER, VENDOR, ADMIN
+  status           String    @default("ACTIVE")   // ACTIVE, BANNED, SUSPENDED
+  storeId          String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -48,6 +51,9 @@ model Store {
   tiktokLiveUrl  String?
   isLiveNow      Boolean        @default(false)
   walletBalance  Float          @default(0)
+  status         String         @default("ACTIVE") // ACTIVE, SUSPENDED, BANNED
+  customCommissionRate Float?
+  bankAccountInfo String?        // JSON: bank, account, holder, nit
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -55,6 +61,7 @@ model Store {
   liveStreams    LiveStream[]
   orderItems     OrderItem[]
   cashShifts     CashShift[]
+  coupons        Coupon[]
 }
 
 model Category {
@@ -86,6 +93,7 @@ model Product {
   hasInvoice      Boolean        @default(true)
   isFlashSale     Boolean        @default(false)
   flashSaleEnd    DateTime?
+  status          String         @default("ACTIVE") // ACTIVE, REMOVED_BY_ADMIN, DRAFT
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -104,6 +112,13 @@ model ProductOffer {
   estimatedDelivery String      @default("Llega mañana")
   isRecommended     Boolean     @default(false)
   isActive          Boolean     @default(true)
+  salePrice         Float?
+  discountPercent   Int?        @default(0)
+  isFlashSale       Boolean     @default(false)
+  flashSaleEnd      DateTime?
+  promoBadge        String?     // OFERTA_FLASH, LIQUIDACION, COMBO, DOS_POR_UNO
+  promoStock        Int?
+  promoSalesCount   Int         @default(0)
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -206,5 +221,38 @@ model CashMovement {
   description String
   referenceId String?   // Order ID or receipt #
   createdAt   DateTime  @default(now())
+}
+
+model PaymentConfig {
+  id                 String   @id @default(cuid())
+  gatewayKey         String   @unique // QR_SIMPLE_ASFI, CASH_ON_DELIVERY, CARD_CYBERSOURCE
+  name               String
+  isEnabled          Boolean  @default(true)
+  platformCommission Float    @default(5.0) // % de comisión
+  minAmount          Float    @default(1.0)
+  maxAmount          Float?   @default(5000.0)
+  apiEndpoint        String?
+  apiKeyEncrypted    String?
+  merchantAccountId  String?  // Nro cuenta bancaria centralizadora
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Coupon {
+  id              String    @id @default(cuid())
+  code            String    @unique
+  storeId         String?
+  store           Store?    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  discountType    String    @default("PERCENT") // PERCENT, FIXED_AMOUNT
+  discountValue   Float     // ej: 15% o Bs. 30
+  minOrderAmount  Float     @default(0)
+  maxDiscount     Float?
+  usageLimit      Int?      @default(100)
+  usedCount       Int       @default(0)
+  validFrom       DateTime  @default(now())
+  validUntil      DateTime
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
 }
 

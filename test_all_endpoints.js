@@ -483,6 +483,86 @@ async function runAllTests() {
   }
 
   // -----------------------------------------------------------------
+  // 9. SUPER ADMIN & CONFIGURACIÓN DE MÉTODOS DE PAGO
+  // -----------------------------------------------------------------
+  console.log('\n\x1b[34m--- 9. Super Admin & Pasarelas de Pago Bolivia ---\x1b[0m');
+
+  // 9.1 Stats globales
+  const resAdminStats = await request('/admin/stats');
+  recordResult('Admin stats overview', 'GET', '/admin/stats', resAdminStats, Boolean(resAdminStats.data && resAdminStats.data.totalStores !== undefined));
+
+  // 9.2 Tiendas Admin
+  const resAdminStores = await request('/admin/stores');
+  recordResult('Admin list all stores', 'GET', '/admin/stores', resAdminStores, Array.isArray(resAdminStores.data));
+
+  let testAdminStoreId = null;
+  if (Array.isArray(resAdminStores.data) && resAdminStores.data.length > 0) {
+    testAdminStoreId = resAdminStores.data[0].id;
+    // Cortar / Suspender tienda
+    const resSuspend = await request(`/admin/stores/${testAdminStoreId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'SUSPENDED' }),
+    });
+    recordResult('Admin suspend/cut store', 'PATCH', '/admin/stores/:id/status', resSuspend, resSuspend.data?.status === 'SUSPENDED');
+
+    // Reactivar tienda
+    const resReactivate = await request(`/admin/stores/${testAdminStoreId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'ACTIVE' }),
+    });
+    recordResult('Admin reactivate store', 'PATCH', '/admin/stores/:id/status', resReactivate, resReactivate.data?.status === 'ACTIVE');
+  }
+
+  // 9.3 Usuarios Admin
+  const resAdminUsers = await request('/admin/users');
+  recordResult('Admin list all users', 'GET', '/admin/users', resAdminUsers, Array.isArray(resAdminUsers.data));
+
+  if (Array.isArray(resAdminUsers.data) && resAdminUsers.data.length > 0) {
+    const testUserId = resAdminUsers.data[0].id;
+    const resRole = await request(`/admin/users/${testUserId}/role`, {
+      method: 'PATCH',
+      body: JSON.stringify({ role: 'ADMIN' }),
+    });
+    recordResult('Admin promote user role', 'PATCH', '/admin/users/:id/role', resRole, resRole.data?.role === 'ADMIN');
+  }
+
+  // 9.4 Pedidos Globales Admin
+  const resAdminOrders = await request('/admin/orders');
+  recordResult('Admin list global orders', 'GET', '/admin/orders', resAdminOrders, Array.isArray(resAdminOrders.data));
+
+  // 9.5 Catálogo Admin & Moderación
+  const resAdminProducts = await request('/admin/products');
+  recordResult('Admin list all products', 'GET', '/admin/products', resAdminProducts, Array.isArray(resAdminProducts.data));
+
+  if (createdProductId) {
+    const resMod = await request(`/admin/products/${createdProductId}/moderate`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'REMOVED_BY_ADMIN' }),
+    });
+    recordResult('Admin moderate/take down product', 'PATCH', '/admin/products/:id/moderate', resMod, resMod.data?.status === 'REMOVED_BY_ADMIN');
+
+    // Reactivar
+    await request(`/admin/products/${createdProductId}/moderate`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'ACTIVE' }),
+    });
+  }
+
+  // 9.6 Pasarelas de Pago Bolivia
+  const resPaymentConfigs = await request('/admin/payment-configs');
+  recordResult('Admin get payment configs (QR Simple & COD)', 'GET', '/admin/payment-configs', resPaymentConfigs, Array.isArray(resPaymentConfigs.data) && resPaymentConfigs.data.length > 0);
+
+  const resUpdateQr = await request('/admin/payment-configs/QR_SIMPLE_ASFI', {
+    method: 'PUT',
+    body: JSON.stringify({
+      isEnabled: true,
+      platformCommission: 5.5,
+      notes: 'Pasarela ASFI actualizada por prueba automatizada',
+    }),
+  });
+  recordResult('Admin update QR Simple gateway config', 'PUT', '/admin/payment-configs/QR_SIMPLE_ASFI', resUpdateQr, resUpdateQr.data?.platformCommission === 5.5);
+
+  // -----------------------------------------------------------------
   // CLEANUP TEST PRODUCT (Tests DELETE endpoint)
   // -----------------------------------------------------------------
   console.log('\n\x1b[34m--- Cleanup & DELETE Endpoint ---\x1b[0m');

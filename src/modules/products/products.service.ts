@@ -24,7 +24,15 @@ export class ProductsService {
       return product;
     }
 
-    const whereClause: any = {};
+    const whereClause: any = {
+      status: 'ACTIVE',
+      offers: {
+        some: {
+          isActive: true,
+          store: { status: 'ACTIVE' },
+        },
+      },
+    };
 
     if (category) {
       whereClause.category = { slug: category };
@@ -47,7 +55,7 @@ export class ProductsService {
       include: {
         category: true,
         offers: {
-          where: { isActive: true },
+          where: { isActive: true, store: { status: 'ACTIVE' } },
           include: { store: true },
           orderBy: { price: 'asc' },
         },

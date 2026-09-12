@@ -64,4 +64,46 @@ export class LiveStreamsService {
       },
     });
   }
+
+  async startLive(id: string) {
+    const stream = await this.prisma.liveStream.update({
+      where: { id },
+      data: { status: 'LIVE' },
+      include: { store: true },
+    });
+
+    if (stream.storeId) {
+      await this.prisma.store.update({
+        where: { id: stream.storeId },
+        data: { isLiveNow: true },
+      });
+    }
+
+    return stream;
+  }
+
+  async endLive(id: string) {
+    const stream = await this.prisma.liveStream.update({
+      where: { id },
+      data: { status: 'ENDED' },
+      include: { store: true },
+    });
+
+    if (stream.storeId) {
+      await this.prisma.store.update({
+        where: { id: stream.storeId },
+        data: { isLiveNow: false },
+      });
+    }
+
+    return stream;
+  }
+
+  async featureProduct(id: string, productId: string) {
+    return this.prisma.liveStream.update({
+      where: { id },
+      data: { featuredProductIds: productId },
+      include: { store: true },
+    });
+  }
 }

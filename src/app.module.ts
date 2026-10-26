@@ -11,6 +11,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { CashRegisterModule } from './modules/cash-register/cash-register.module';
 import { UploadModule } from './modules/upload/upload.module';
+import { TikTokLivesModule } from './modules/tiktok-lives/tiktok-lives.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { UploadModule } from './modules/upload/upload.module';
     AuthModule,
     CashRegisterModule,
     UploadModule,
+    TikTokLivesModule,
   ],
 })
 export class AppModule {}

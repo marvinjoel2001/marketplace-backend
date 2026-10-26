@@ -4,7 +4,8 @@ datasource db {
 }
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 model User {
@@ -62,6 +63,39 @@ model Store {
   orderItems     OrderItem[]
   cashShifts     CashShift[]
   coupons        Coupon[]
+  discoveredLives TikTokLive[]
+  registeredTikTokAccount TikTokAccount?
+}
+
+model TikTokAccount {
+  username  String   @id
+  countryCode String @default("BO")
+  storeId   String   @unique
+  store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model TikTokLive {
+  username       String   @id
+  roomId         String
+  title          String
+  viewerCount    Int      @default(0)
+  avatarUrl      String?
+  coverImageUrl  String?
+  tags           String   @default("[]")
+  category       String   @default("Otros")
+  isSelling      Boolean  @default(false)
+  countryCode    String   @default("BO")
+  geoEvidence    String
+  source         String
+  status         String   @default("ACTIVE")
+  verifiedAt     DateTime
+  storeId        String?
+  store          Store?   @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  updatedAt      DateTime @updatedAt
+
+  @@index([status, isSelling, countryCode, verifiedAt])
 }
 
 model Category {

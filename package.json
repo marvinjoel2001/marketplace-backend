@@ -4,6 +4,7 @@
   "description": "CompraYa Marketplace Backend - NestJS REST API with Prisma ORM and OpenDSP Integration",
   "private": true,
   "license": "UNLICENSED",
+  "engines": { "node": ">=22.12.0" },
   "scripts": {
     "build": "nest build",
     "start": "nest start",
@@ -15,20 +16,31 @@
     "test": "jest --runInBand --forceExit",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage --runInBand --forceExit",
-    "test:endpoints": "node test_all_endpoints.js"
+    "test:endpoints": "node test_all_endpoints.js",
+    "test:tiktok": "jest --runInBand --testPathPattern=tiktok-lives",
+    "tiktok:browser-smoke": "node scripts/tiktok-browser-smoke.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^10.4.15",
     "@nestjs/platform-express": "^10.4.15",
+    "@nestjs/schedule": "^4.1.2",
     "@prisma/client": "5.22.0",
     "chiringuito-dsp-workspace": "file:..",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
     "dotenv": "^16.4.7",
+    "http-proxy-agent": "^7.0.2",
+    "https-proxy-agent": "^7.0.6",
+    "ioredis": "^5.11.1",
+    "puppeteer": "^25.16.0",
+    "puppeteer-core": "^25.16.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "tiktok-live-connector": "^2.5.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",

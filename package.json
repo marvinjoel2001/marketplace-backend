@@ -18,7 +18,8 @@
     "test:cov": "jest --coverage --runInBand --forceExit",
     "test:endpoints": "node test_all_endpoints.js",
     "test:tiktok": "jest --runInBand --testPathPattern=tiktok-lives",
-    "tiktok:browser-smoke": "node scripts/tiktok-browser-smoke.cjs"
+    "tiktok:browser-smoke": "node scripts/tiktok-browser-smoke.cjs",
+    "tiktok:sync": "node scripts/tiktok-sync.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

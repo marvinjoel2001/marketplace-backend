@@ -25,8 +25,9 @@ export class TikTokLivesController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('category') category?: string,
+    @Query('city') city?: string,
   ) {
-    return this.lives.active({ page, limit, category });
+    return this.lives.active({ page, limit, category, city });
   }
 
   @Put('stores/:storeId/account')

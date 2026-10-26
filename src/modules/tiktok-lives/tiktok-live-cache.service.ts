@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 import { TikTokLivesConfig } from './tiktok-lives.config';
-import { ActiveLive, LIVE_TTL_SECONDS } from './tiktok-lives.types';
+import { ActiveLive, LIVE_CACHE_SECONDS } from './tiktok-lives.types';
 
 const KEY = 'vitrina:tiktok:v1:active';
 const GENERATION = 'vitrina:tiktok:v1:generation';
@@ -77,7 +77,7 @@ export class TikTokLiveCache implements OnModuleDestroy {
     if (version === null) return;
     if (!this.redis) {
       if (String(this.generation) === version)
-        this.memory = { expires: Date.now() + LIVE_TTL_SECONDS * 1000, lives };
+        this.memory = { expires: Date.now() + LIVE_CACHE_SECONDS * 1000, lives };
       return;
     }
     // Don't resurrect a snapshot read before a stream-end/cache invalidation event.
@@ -89,7 +89,7 @@ export class TikTokLiveCache implements OnModuleDestroy {
         GENERATION,
         version,
         JSON.stringify(lives),
-        LIVE_TTL_SECONDS,
+        LIVE_CACHE_SECONDS,
       )
       .catch(() => undefined);
   }

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { Cron, Interval } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EcommerceClassifier } from './ecommerce-classifier.service';
@@ -14,10 +14,13 @@ import {
 } from './tiktok-lives.types';
 
 @Injectable()
-export class TikTokLivesWorker implements OnModuleDestroy {
+export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly logger = new Logger(TikTokLivesWorker.name);
   private readonly retry = new RetryGate();
+  private readonly accountRetry = new RetryGate(15000, 60000);
+  private readonly lastCheck = new Map<string, number>();
   private readonly checking = new Set<string>();
+  private seedCursor = 0;
   private stopping = false;
   constructor(
     private readonly prisma: PrismaService,
@@ -29,23 +32,32 @@ export class TikTokLivesWorker implements OnModuleDestroy {
     private readonly config: TikTokLivesConfig,
   ) {}
 
+  onApplicationBootstrap(): void {
+    if (!this.config.enabled || this.config.runOnStartup === false) return;
+    // Start useful work immediately; HTTP startup does not wait for Chromium.
+    void Promise.allSettled([
+      this.refreshActive(), this.registeredStores(), this.discover(),
+    ]);
+  }
+
   @Cron('0 */3 * * * *', { timeZone: 'America/La_Paz' })
   async discover(): Promise<void> {
     if (!this.config.enabled || this.stopping || !this.retry.ready('discovery'))
       return;
     await this.cache.withLease('discovery', async (owned) => {
       try {
-        const candidates = await this.discovery.discover();
+        const candidates = await this.discovery.discover(await this.seeds());
         this.retry.success('discovery');
-        const selling = candidates.filter((live) => {
-          const classification = this.classifier.classify(live);
-          return classification.isSelling && classification.geoEvidence;
-        });
+        const selling = candidates.filter(
+          // Regional data often appears only in full room info. Do not reject
+          // a seller before that enrichment; saveVerified applies the final filter.
+          (live) => this.classifier.classify(live).isSelling,
+        );
         await this.each(selling, owned, (live) =>
           this.verify(live.username, live, undefined, owned),
         );
         this.logger.log(
-          `Exploración TikTok: ${candidates.length} candidatos, ${selling.length} con indicios de venta y región`,
+          `Exploración TikTok: ${candidates.length} candidatos, ${selling.length} vendedores revisados${this.config.requireRegion ? ' con filtro regional' : ''}`,
         );
       } catch {
         const wait = this.retry.fail('discovery');
@@ -54,6 +66,24 @@ export class TikTokLivesWorker implements OnModuleDestroy {
         );
       }
     });
+  }
+
+  /** Rotating sample of live sellers whose rooms seed the next discovery cycle. */
+  private async seeds(): Promise<string[]> {
+    const count = this.config.snowballPerCycle;
+    if (!count) return [];
+    const live = await this.prisma.tikTokLive.findMany({
+      where: { status: 'ACTIVE', isSelling: true },
+      orderBy: { username: 'asc' },
+      select: { username: true },
+    });
+    if (!live.length) return [];
+    const start = this.seedCursor % live.length;
+    this.seedCursor = start + count;
+    return Array.from(
+      { length: Math.min(count, live.length) },
+      (_, i) => live[(start + i) % live.length].username,
+    );
   }
 
   @Cron('0 */3 * * * *', { timeZone: 'America/La_Paz' })
@@ -73,6 +103,29 @@ export class TikTokLivesWorker implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Sellers found before go live again almost daily, and TikTok's public feed only shows a few per
+   * visit (LIVE search needs a login). Re-probe ended, previously listed sellers in rotation,
+   * least recently checked first; markEnded bumps updatedAt so the rotation advances.
+   */
+  @Cron('30 1-59/3 * * * *', { timeZone: 'America/La_Paz' })
+  async knownSellers(): Promise<void> {
+    if (!this.config.enabled || this.stopping || this.config.recheckPerCycle === 0)
+      return;
+    await this.cache.withLease('known', async (owned) => {
+      const known = await this.prisma.tikTokLive.findMany({
+        where: { status: 'ENDED', storeId: null },
+        orderBy: { updatedAt: 'asc' },
+        take: this.config.recheckPerCycle,
+        select: { username: true },
+      });
+      const startBefore = Date.now() + 150000;
+      await this.each(known, () => owned() && Date.now() < startBefore, (row) =>
+        this.verify(row.username, undefined, undefined, owned),
+      );
+    });
+  }
+
   @Interval(30000)
   async refreshActive(): Promise<void> {
     if (!this.config.enabled || this.stopping) return;
@@ -80,8 +133,12 @@ export class TikTokLivesWorker implements OnModuleDestroy {
       const active = await this.prisma.tikTokLive.findMany({
         where: { status: 'ACTIVE' },
         include: { store: true },
+        orderBy: { verifiedAt: 'asc' },
       });
-      await this.each(active, owned, (row) =>
+      // Failed/slow accounts must not monopolize the front of every batch.
+      active.sort((a, b) => (this.lastCheck.get(a.username) ?? 0) - (this.lastCheck.get(b.username) ?? 0));
+      const startBefore = Date.now() + 20000;
+      await this.each(active, () => owned() && Date.now() < startBefore, (row) =>
         this.verify(
           row.username,
           {
@@ -91,6 +148,8 @@ export class TikTokLivesWorker implements OnModuleDestroy {
             viewerCount: row.viewerCount,
             avatarUrl: row.avatarUrl,
             coverImageUrl: row.coverImageUrl,
+            streamHlsUrl: row.streamHlsUrl ?? undefined,
+            streamFlvUrl: row.streamFlvUrl ?? undefined,
             tags: this.tags(row.tags),
             countryCode:
               row.geoEvidence === 'tiktok_country'
@@ -114,10 +173,12 @@ export class TikTokLivesWorker implements OnModuleDestroy {
       this.stopping ||
       !owned() ||
       this.checking.has(username) ||
-      !this.retry.ready(username)
+      !this.accountRetry.ready(username)
     )
       return;
     this.checking.add(username);
+    this.lastCheck.set(username, Date.now());
+    if (this.lastCheck.size > 2000) this.lastCheck.delete(this.lastCheck.keys().next().value);
     try {
       await this.cache.withLease(
         `account:${username}`,
@@ -136,9 +197,9 @@ export class TikTokLivesWorker implements OnModuleDestroy {
               await this.connector.unwatch(username);
               return;
             }
-            const result = await this.connector.probe(username);
+            const result = await this.connector.probe(username, candidate?.roomId);
             if (!stillOwned() || this.stopping) return;
-            this.retry.success(username);
+            this.accountRetry.success(username);
             if (!result.live) {
               await this.lives.markEnded(username);
               if (store)
@@ -152,6 +213,10 @@ export class TikTokLivesWorker implements OnModuleDestroy {
             const live: LiveCandidate = {
               ...candidate,
               ...result.live,
+              nickname: result.live.nickname ||
+                (candidate?.roomId === result.live.roomId ? candidate.nickname : undefined),
+              bio: result.live.bio ||
+                (candidate?.roomId === result.live.roomId ? candidate.bio : undefined),
               title:
                 result.live.title ||
                 (candidate?.roomId === result.live.roomId
@@ -171,13 +236,27 @@ export class TikTokLivesWorker implements OnModuleDestroy {
                 (candidate?.roomId === result.live.roomId
                   ? candidate.countryCode
                   : undefined),
+              streamHlsUrl:
+                result.live.streamHlsUrl ??
+                (candidate?.roomId === result.live.roomId
+                  ? candidate.streamHlsUrl
+                  : undefined),
+              streamFlvUrl:
+                result.live.streamFlvUrl ??
+                (candidate?.roomId === result.live.roomId
+                  ? candidate.streamFlvUrl
+                  : undefined),
             };
             const saved = await this.lives.saveVerified(live, store);
             if (saved && stillOwned() && !this.stopping)
-              await this.connector.watch(live);
+              // Signature-provider latency must not hold up HTTP verification
+              // of every other room in the batch.
+              void this.connector.watch(live).catch(() =>
+                this.logger.warn('Socket TikTok no disponible; se mantiene verificación HTTP'),
+              );
             else await this.connector.unwatch(username);
           } catch {
-            const wait = this.retry.fail(username);
+            const wait = this.accountRetry.fail(username);
             this.logger.warn(
               `Verificación TikTok temporalmente indisponible; backoff ${Math.ceil(wait / 1000)}s. La vigencia anterior no se renueva.`,
             );
@@ -206,7 +285,7 @@ export class TikTokLivesWorker implements OnModuleDestroy {
   ): Promise<void> {
     let index = 0;
     await Promise.all(
-      Array.from({ length: Math.min(3, items.length) }, async () => {
+      Array.from({ length: Math.min(this.config.verifyConcurrency, items.length) }, async () => {
         while (index < items.length && !this.stopping && owned())
           await task(items[index++]);
       }),

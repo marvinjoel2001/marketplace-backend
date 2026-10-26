@@ -7,7 +7,7 @@ import type {
 } from 'tiktok-live-connector';
 import { TikTokLivesConfig } from './tiktok-lives.config';
 import { TikTokLivesService } from './tiktok-lives.service';
-import { LiveCandidate, RetryGate } from './tiktok-lives.types';
+import { LiveCandidate, normalizeUsername, RetryGate } from './tiktok-lives.types';
 import { parseRooms } from './tiktok-payload.parser';
 
 // Preserve native ESM import when compiling this NestJS project to CommonJS (Node >=20).
@@ -72,26 +72,58 @@ export class TikTokConnectorService implements OnModuleDestroy {
     });
   }
 
-  /** Lightweight GET /@username/live via the connector's public HTML route, no signing provider needed. */
-  async probe(username: string): Promise<{ live: LiveCandidate | null }> {
+  /** Public HTML, then API-live when HTML is missing or has changed; no signing provider needed. */
+  async probe(username: string, roomId?: string): Promise<{ live: LiveCandidate | null }> {
+    const clean = normalizeUsername(username);
+    if (!clean) throw new Error('Username TikTok inválido');
     const sdk = await this.library();
-    const connection = await this.create(username);
-    const raw = await sdk.RouteConfig.fetchRoomInfoFromHtml({
-      webClient: connection.webClient,
-      uniqueId: username,
-    });
-    const info = raw?.liveRoomUserInfo ?? raw?.data?.liveRoomUserInfo ?? raw;
+    const connection = await this.create(clean);
+    if (roomId && /^\d{5,30}$/.test(roomId)) {
+      // Known rooms can be verified in one request to webcast. The profile
+      // HTML/API-live endpoints frequently return 403 even for active rooms.
+      const raw = await sdk.RouteConfig.fetchRoomInfo({
+        webClient: connection.webClient, roomId,
+      });
+      const empty = raw === undefined || raw === null ||
+        (typeof raw === 'string' && raw.trim() === '') ||
+        (typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length === 0);
+      if (!empty) {
+        const result = this.probeResult(raw, clean);
+        if (result.live && result.live.roomId !== roomId)
+          throw new Error('TikTok devolvió una sala distinta a la solicitada');
+        return result;
+      }
+      // The SDK can return an empty string/envelope from webcast even while
+      // the public profile route still verifies this seller. Fall through to
+      // that route; explicit HTTP blocks and offline states keep their meaning.
+    }
+    const args = { webClient: connection.webClient, uniqueId: clean };
+    try {
+      const raw = await sdk.RouteConfig.fetchRoomInfoFromHtml(args);
+      return this.probeResult(raw, clean);
+    } catch {
+      // A successful HTTP response may still omit SIGI_STATE. Use the public
+      // API route that TikTok itself uses, without requiring Euler credentials.
+      const raw = await sdk.RouteConfig.fetchRoomInfoFromApiLive(args);
+      return this.probeResult(raw, clean);
+    }
+  }
+
+  private probeResult(raw: any, username: string): { live: LiveCandidate | null } {
+    const info =
+      raw?.liveRoomUserInfo ?? raw?.data?.liveRoomUserInfo ?? raw?.data ?? raw;
+    const room = info?.liveRoom ?? (info?.owner ? info : undefined);
     const status =
-      info?.liveRoom?.status === undefined
+      room?.status === undefined
         ? undefined
-        : Number(info.liveRoom.status);
+        : Number(room.status);
     if (
       status === 4 ||
       status === 0 ||
       (info?.user && String(info.user.roomId) === '0')
     )
       return { live: null };
-    const live = parseRooms(raw).find((room) => room.username === username);
+    const live = parseRooms(info).find((room) => room.username === username);
     if (!live || Number(status) !== 2)
       throw new Error(
         'Respuesta TikTok sin estado verificable (posible bloqueo o cambio de formato)',
@@ -135,7 +167,13 @@ export class TikTokConnectorService implements OnModuleDestroy {
     connection.on(sdk.ControlEvent.ERROR, () => {
       /* connect() rejects; don't log proxy/session secrets */
     });
-    connection.on(sdk.ControlEvent.DISCONNECTED, ended);
+    connection.on(sdk.ControlEvent.DISCONNECTED, () => {
+      if (this.connections.get(live.username) !== entry) return;
+      this.connections.delete(live.username);
+      this.retry.fail(live.username);
+      // Transport loss does not prove the broadcast ended. HTTP refresh remains
+      // authoritative until TikTok explicitly reports offline or STREAM_END.
+    });
     connection.on(sdk.WebcastEvent.STREAM_END, ended);
     connection.on(sdk.WebcastEvent.ROOM_USER, (message) => {
       if (

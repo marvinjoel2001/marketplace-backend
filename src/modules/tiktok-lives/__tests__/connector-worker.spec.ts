@@ -13,6 +13,8 @@ const live = {
 describe('connector HTTP state and WebSocket lifecycle', () => {
   let service: TikTokConnectorService;
   let route: jest.Mock;
+  let apiRoute: jest.Mock;
+  let roomRoute: jest.Mock;
   let connection: any;
   let lives: any;
   const sdk = {
@@ -26,9 +28,11 @@ describe('connector HTTP state and WebSocket lifecycle', () => {
     };
     service = new TikTokConnectorService({ maxConnections: 1 } as any, lives);
     route = jest.fn();
+    apiRoute = jest.fn().mockResolvedValue({ message: 'unavailable' });
+    roomRoute = jest.fn();
     (service as any).sdk = Promise.resolve({
       ...sdk,
-      RouteConfig: { fetchRoomInfoFromHtml: route },
+      RouteConfig: { fetchRoomInfoFromHtml: route, fetchRoomInfoFromApiLive: apiRoute, fetchRoomInfo: roomRoute },
     });
     connection = Object.assign(new EventEmitter(), {
       webClient: {},
@@ -50,6 +54,82 @@ describe('connector HTTP state and WebSocket lifecycle', () => {
       roomId: live.roomId,
     });
     expect(connection.connect).not.toHaveBeenCalled();
+    expect(apiRoute).not.toHaveBeenCalled();
+  });
+  it('actualiza una sala conocida por webcast sin repetir las consultas de perfil', async () => {
+    roomRoute.mockResolvedValue({ data: {
+      id_str: live.roomId, status: 2, title: live.title, user_count: 12,
+      owner: { display_id: 'tienda' },
+    } });
+    expect((await service.probe('tienda', live.roomId)).live).toMatchObject(live);
+    expect(roomRoute).toHaveBeenCalledWith({ webClient: connection.webClient, roomId: live.roomId });
+    expect(route).not.toHaveBeenCalled();
+    expect(apiRoute).not.toHaveBeenCalled();
+  });
+  it('no inventa fin de transmisión ante un bloqueo de la ruta webcast', async () => {
+    roomRoute.mockRejectedValue(new Error('403'));
+    await expect(service.probe('tienda', live.roomId)).rejects.toThrow('403');
+    expect(route).not.toHaveBeenCalled();
+  });
+  it.each([undefined, null, '', '  ', {}])('recurre al perfil público cuando webcast devuelve un cuerpo vacío: %p', async (empty) => {
+    roomRoute.mockResolvedValue(empty);
+    route.mockResolvedValue({
+      user: { uniqueId: 'tienda' },
+      liveRoom: { roomId: live.roomId, status: 2, title: live.title },
+    });
+    expect((await service.probe('tienda', live.roomId)).live).toMatchObject({
+      username: 'tienda', roomId: live.roomId,
+    });
+    expect(route).toHaveBeenCalledTimes(1);
+    expect(apiRoute).not.toHaveBeenCalled();
+  });
+  it('no renueva estado si tampoco puede verificar el perfil de respaldo', async () => {
+    roomRoute.mockResolvedValue(undefined);
+    route.mockRejectedValue(new Error('403'));
+    apiRoute.mockResolvedValue({ message: 'unavailable' });
+    await expect(service.probe('tienda', live.roomId)).rejects.toThrow('sin estado verificable');
+    expect(lives.markEnded).not.toHaveBeenCalled();
+  });
+  it('retira salas terminadas y rechaza otra cuenta o sala desde webcast', async () => {
+    roomRoute.mockResolvedValue({ data: { id_str: live.roomId, status: 4, owner: { display_id: 'tienda' } } });
+    expect(await service.probe('tienda', live.roomId)).toEqual({ live: null });
+    roomRoute.mockResolvedValue({ data: { id_str: live.roomId, status: 2, owner: { display_id: 'otra' } } });
+    await expect(service.probe('tienda', live.roomId)).rejects.toThrow('sin estado verificable');
+    roomRoute.mockResolvedValue({ data: { id_str: '9999999999', status: 2, owner: { display_id: 'tienda' } } });
+    await expect(service.probe('tienda', live.roomId)).rejects.toThrow('sala distinta');
+  });
+  it('lee roomId en el usuario hermano como lo entrega TikTok actualmente', async () => {
+    route.mockResolvedValue({
+      user: { uniqueId: 'Tienda', roomId: live.roomId },
+      liveRoom: { status: 2, title: live.title, userCount: 12 },
+    });
+    expect((await service.probe('@Tienda')).live).toMatchObject(live);
+    expect(apiRoute).not.toHaveBeenCalled();
+  });
+  it.each(['error', 'incomplete'])('recurre a API-live si HTML falla: %s', async (mode) => {
+    if (mode === 'error') route.mockRejectedValue(new Error('Missing SIGI_STATE'));
+    else route.mockResolvedValue({ user: { uniqueId: 'tienda' } });
+    apiRoute.mockResolvedValue({
+      data: {
+        user: { uniqueId: 'tienda', roomId: live.roomId },
+        liveRoom: { status: 2, title: live.title, liveRoomStats: { userCount: 12 } },
+      },
+      statusCode: 0,
+    });
+    expect((await service.probe('tienda')).live).toMatchObject(live);
+    expect(connection.connect).not.toHaveBeenCalled();
+  });
+  it('distingue offline explícito de API-live y rechaza respuestas de otra cuenta', async () => {
+    route.mockRejectedValue(new Error('Missing SIGI_STATE'));
+    apiRoute.mockResolvedValue({ data: { user: { uniqueId: 'tienda', roomId: '0' } } });
+    expect(await service.probe('tienda')).toEqual({ live: null });
+    apiRoute.mockResolvedValue({
+      data: {
+        user: { uniqueId: 'otra', roomId: live.roomId },
+        liveRoom: { status: 2 },
+      },
+    });
+    await expect(service.probe('tienda')).rejects.toThrow('sin estado verificable');
   });
   it('distingue fin explícito de CAPTCHA o estado desconocido', async () => {
     route.mockResolvedValue({
@@ -62,6 +142,7 @@ describe('connector HTTP state and WebSocket lifecycle', () => {
       'sin estado verificable',
     );
     route.mockRejectedValue(new Error('429'));
+    apiRoute.mockRejectedValue(new Error('429'));
     await expect(service.probe('tienda')).rejects.toThrow('429');
   });
   it('retira salas finalizadas, procesa viewers sin renovar vigencia y cierra sockets', async () => {
@@ -89,6 +170,13 @@ describe('connector HTTP state and WebSocket lifecycle', () => {
     connection.emit('disconnected');
     expect(lives.markEnded).not.toHaveBeenCalled();
   });
+  it('mantiene la sala verificada por HTTP si solo se pierde el WebSocket', async () => {
+    await service.watch(live);
+    connection.emit('disconnected');
+    expect(lives.markEnded).not.toHaveBeenCalled();
+    await service.watch(live);
+    expect(connection.connect).toHaveBeenCalledTimes(1);
+  });
   it('respeta el límite de sockets incluso con intentos concurrentes', async () => {
     await Promise.all(
       ['a', 'b', 'c'].map((username) => service.watch({ ...live, username })),
@@ -104,10 +192,15 @@ describe('TikTok worker freshness and failure handling', () => {
   let prisma: any;
   let config: any;
   beforeEach(() => {
-    config = { enabled: true, country: 'BO', regionTerms: ['bolivia'] };
+    config = {
+      enabled: true,
+      country: 'BO',
+      regionTerms: ['bolivia'],
+      verifyConcurrency: 3,
+    };
     connector = {
       probe: jest.fn().mockResolvedValue({ live }),
-      watch: jest.fn(),
+      watch: jest.fn().mockResolvedValue(undefined),
       unwatch: jest.fn(),
     };
     lives = {
@@ -151,6 +244,29 @@ describe('TikTok worker freshness and failure handling', () => {
     await worker.refreshActive();
     expect(connector.probe).not.toHaveBeenCalled();
   });
+  it('inicia exploración y actualización al arrancar, sin esperar al cron', () => {
+    const discover = jest.spyOn(worker, 'discover').mockResolvedValue();
+    const stores = jest.spyOn(worker, 'registeredStores').mockResolvedValue();
+    const refresh = jest.spyOn(worker, 'refreshActive').mockResolvedValue();
+    worker.onApplicationBootstrap();
+    expect(discover).toHaveBeenCalledTimes(1);
+    expect(stores).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+  it('no bloquea verificaciones del lote mientras espera la firma del WebSocket', async () => {
+    connector.watch.mockReturnValue(new Promise(() => {}));
+    await worker.refreshActive();
+    expect(lives.saveVerified).toHaveBeenCalledTimes(1);
+    expect(connector.probe).toHaveBeenCalledWith('tienda', live.roomId);
+  });
+  it('verifica vendedores antes de aplicar el filtro regional de la información completa', async () => {
+    config.requireRegion = true;
+    const discovery = (worker as any).discovery;
+    discovery.discover.mockResolvedValue([{ ...live, title: 'Remate de ropa', tags: [] }]);
+    await worker.discover();
+    expect(connector.probe).toHaveBeenCalledWith('tienda', live.roomId);
+    expect(lives.saveVerified).toHaveBeenCalledTimes(1);
+  });
   it('no renueva verificaciones ni anuncia fin cuando TikTok bloquea la consulta', async () => {
     connector.probe.mockRejectedValue(new Error('captcha'));
     await worker.refreshActive();
@@ -158,6 +274,41 @@ describe('TikTok worker freshness and failure handling', () => {
     expect(connector.probe).toHaveBeenCalledTimes(1);
     expect(lives.saveVerified).not.toHaveBeenCalled();
     expect(lives.markEnded).not.toHaveBeenCalled();
+  });
+  it('limita el lote lento y comienza el siguiente por las cuentas aún no revisadas', async () => {
+    let now = 100000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    config.verifyConcurrency = 1;
+    prisma.tikTokLive.findMany.mockImplementation(async () => ['a', 'b', 'c', 'd'].map((username) => ({
+      ...live, username, tags: '[]', store: null,
+    })));
+    connector.probe.mockImplementation(async (username: string) => {
+      now += 10001;
+      return { live: { ...live, username } };
+    });
+    try {
+      await worker.refreshActive();
+      expect(connector.probe.mock.calls.map(([username]) => username)).toEqual(['a', 'b']);
+      // Work already started is committed even after the batch deadline.
+      expect(lives.saveVerified).toHaveBeenCalledTimes(2);
+      now += 30000;
+      await worker.refreshActive();
+      expect(connector.probe.mock.calls.map(([username]) => username)).toEqual(['a', 'b', 'c', 'd']);
+    } finally { clock.mockRestore(); }
+  });
+  it('reintenta una cuenta bloqueada dentro del margen de recuperación', async () => {
+    let now = 100000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    connector.probe.mockRejectedValue(new Error('403'));
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await worker.refreshActive();
+        now += 70000;
+      }
+      expect(connector.probe).toHaveBeenCalledTimes(5);
+      expect(lives.saveVerified).not.toHaveBeenCalled();
+      expect(lives.markEnded).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
   });
   it('retira una sala cuando HTTP informa fin explícito', async () => {
     connector.probe.mockResolvedValue({ live: null });

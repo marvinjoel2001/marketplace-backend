@@ -7,6 +7,9 @@ export class TikTokLivesConfig {
   get enabled(): boolean {
     return this.env.get('TIKTOK_LIVES_ENABLED') === 'true';
   }
+  get runOnStartup(): boolean {
+    return this.env.get('TIKTOK_RUN_ON_STARTUP') !== 'false';
+  }
   get redisUrl(): string | undefined {
     return this.env.get('TIKTOK_REDIS_URL');
   }
@@ -35,14 +38,46 @@ export class TikTokLivesConfig {
       .map((x) => x.trim())
       .filter(Boolean);
   }
+  /** When false, selling lives without regional evidence are listed too (explicit foreign countries stay out). */
+  get requireRegion(): boolean {
+    return this.env.get('TIKTOK_REQUIRE_REGION') === 'true';
+  }
+  /** Keywords explored through TikTok's LIVE search, besides the /live recommendations feed. */
+  get searchTerms(): string[] {
+    return this.env
+      .get<string>(
+        'TIKTOK_SEARCH_TERMS',
+        'venta de ropa,remate de ropa,ofertas en vivo,tienda bolivia',
+      )
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+      .slice(0, 40);
+  }
+  /** Search terms explored per cycle; the rest rotate in on later cycles to keep each one short. */
+  get searchTermsPerCycle(): number {
+    return this.integer('TIKTOK_SEARCH_TERMS_PER_CYCLE', 4, 1, 40);
+  }
+  /** Live sellers whose rooms are visited per discovery cycle to collect related LIVEs (0 disables). */
+  get snowballPerCycle(): number {
+    return this.integer('TIKTOK_SNOWBALL_PER_CYCLE', 3, 0, 20);
+  }
+  /** Previously listed sellers re-probed per 3-minute cycle to catch them going live again (0 disables). */
+  get recheckPerCycle(): number {
+    return this.integer('TIKTOK_RECHECK_PER_CYCLE', 40, 0, 300);
+  }
+  /** Concurrent HTTP verifications; more lives need more to re-verify within the freshness window. */
+  get verifyConcurrency(): number {
+    return this.integer('TIKTOK_VERIFY_CONCURRENCY', 5, 1, 10);
+  }
   get maxCandidates(): number {
-    return this.integer('TIKTOK_MAX_CANDIDATES', 40, 1, 200);
+    return this.integer('TIKTOK_MAX_CANDIDATES', 200, 1, 500);
   }
   get maxConnections(): number {
     return this.integer('TIKTOK_MAX_CONNECTIONS', 10, 0, 50);
   }
   get scrolls(): number {
-    return this.integer('TIKTOK_SCROLL_STEPS', 8, 1, 30);
+    return this.integer('TIKTOK_SCROLL_STEPS', 20, 1, 30);
   }
   get proxy(): URL | undefined {
     const raw = this.env.get<string>('TIKTOK_PROXY_URL');

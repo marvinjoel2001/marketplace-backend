@@ -76,14 +76,56 @@ describe('TikTokLivesService/API', () => {
       total: 1,
       total_pages: 1,
     });
-    expect(cache.write).toHaveBeenCalledWith(response.data, '1');
+    expect(cache.write).toHaveBeenCalledWith([
+      expect.objectContaining({ verified_at: response.data[0].verified_at }),
+    ], '1');
+    expect(response.data[0].verification_status).toBe('fresh');
   });
-  it('elimina datos vencidos incluso dentro de una instantánea Redis vigente', async () => {
+  it('conserva salas pendientes sin renovar su verificación durante un fallo temporal', async () => {
+    const data = (await service.active({})).data;
+    const verifiedAt = new Date(Date.now() - 61000).toISOString();
+    cache.read.mockResolvedValue([{ ...data[0], verified_at: verifiedAt }]);
+    const response = await service.active({});
+    expect(response.data[0]).toMatchObject({ verified_at: verifiedAt, verification_status: 'refreshing' });
+    expect(response.meta).toMatchObject({ active_count: 0, refreshing_count: 1, retention_seconds: 300 });
+    expect(prisma.tikTokLive.upsert).not.toHaveBeenCalled();
+  });
+  it('elimina datos al vencer el margen de recuperación incluso dentro de una caché vigente', async () => {
     const data = (await service.active({})).data;
     cache.read.mockResolvedValue([
-      { ...data[0], verified_at: new Date(Date.now() - 61000).toISOString() },
+      { ...data[0], verified_at: new Date(Date.now() - 300001).toISOString() },
     ]);
     expect((await service.active({})).data).toEqual([]);
+  });
+  it('ordena las salas recién verificadas antes que las pendientes con más espectadores', async () => {
+    const data = (await service.active({})).data;
+    cache.read.mockResolvedValue([
+      { ...data[0], username: 'pendiente', viewer_count: 1000, verified_at: new Date(Date.now() - 61000).toISOString() },
+      { ...data[0], username: 'activa', viewer_count: 1 },
+    ]);
+    const response = await service.active({});
+    expect(response.data.map((live) => live.username)).toEqual(['activa', 'pendiente']);
+    expect(response.meta).toMatchObject({ active_count: 1, refreshing_count: 1 });
+  });
+  it('retira una sala terminada explícitamente antes de vencer el margen', async () => {
+    prisma.tikTokLive.findUnique.mockResolvedValue({ ...row(), verifiedAt: new Date(Date.now() - 61000) });
+    await service.markEnded('tienda', row().roomId);
+    expect(prisma.tikTokLive.updateMany).toHaveBeenCalledWith({
+      where: { username: 'tienda', roomId: row().roomId }, data: { status: 'ENDED' },
+    });
+    expect(cache.invalidate).toHaveBeenCalled();
+    prisma.tikTokLive.findMany.mockResolvedValue([]);
+    expect((await service.active({})).data).toEqual([]);
+  });
+  it('filtra ubicaciones sin evidencia de una caché anterior al activar solo Bolivia', async () => {
+    const data = (await service.active({})).data;
+    cache.read.mockResolvedValue([{ ...data[0], geo_evidence: 'unverified' }]);
+    config.requireRegion = true;
+    try {
+      expect((await service.active({})).data).toEqual([]);
+    } finally {
+      config.requireRegion = false;
+    }
   });
   it.each([
     { page: '0' },
@@ -104,7 +146,7 @@ describe('TikTokLivesService/API', () => {
     await service.markEnded('tienda', '1111111111');
     expect(prisma.tikTokLive.updateMany).not.toHaveBeenCalled();
   });
-  it('no publica un live sin indicios regionales', async () => {
+  it('publica un live de venta sin indicios regionales como ubicación no verificada', async () => {
     prisma.tikTokLive.findUnique.mockResolvedValue(null);
     await service.saveVerified({
       username: 'tienda',
@@ -112,8 +154,32 @@ describe('TikTokLivesService/API', () => {
       title: 'Remate ropa',
       tags: [],
       viewerCount: 1,
+      streamHlsUrl: 'https://pull-hls.tiktokcdn.com/a.m3u8',
     });
-    expect(prisma.tikTokLive.upsert).not.toHaveBeenCalled();
+    expect(prisma.tikTokLive.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          geoEvidence: 'unverified',
+          streamHlsUrl: 'https://pull-hls.tiktokcdn.com/a.m3u8',
+        }),
+      }),
+    );
+  });
+  it('no publica un live sin indicios regionales si la región es obligatoria', async () => {
+    config.requireRegion = true;
+    try {
+      prisma.tikTokLive.findUnique.mockResolvedValue(null);
+      await service.saveVerified({
+        username: 'tienda',
+        roomId: row().roomId,
+        title: 'Remate ropa',
+        tags: [],
+        viewerCount: 1,
+      });
+      expect(prisma.tikTokLive.upsert).not.toHaveBeenCalled();
+    } finally {
+      config.requireRegion = false;
+    }
   });
   it('guarda ventas geolocalizadas y usa el tiempo real de verificación', async () => {
     await service.saveVerified({
@@ -160,12 +226,12 @@ describe('memory cache and snapshot invalidation', () => {
   beforeEach(() => {
     cache = new TikTokLiveCache({} as any);
   });
-  it('vence a los 60 segundos y no revive un snapshot invalidado', async () => {
+  it('vence a los 15 segundos y no revive un snapshot invalidado', async () => {
     jest.useFakeTimers();
     const version = await cache.version();
     await cache.write([] as ActiveLive[], version);
     expect(await cache.read()).toEqual([]);
-    jest.advanceTimersByTime(60001);
+    jest.advanceTimersByTime(15001);
     expect(await cache.read()).toBeNull();
     await cache.invalidate();
     await cache.write([], version);

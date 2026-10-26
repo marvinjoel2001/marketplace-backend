@@ -13,6 +13,37 @@ function photo(value: any): string | undefined {
   );
 }
 
+const QUALITIES = ['sd', 'ld', 'hd', 'origin'];
+const FLV_KEYS = ['SD1', 'SD2', 'HD1', 'FULL_HD1'];
+
+/**
+ * Low-bandwidth pull URLs. `stream_data` (JSON string in `streamData` or `live_core_sdk_data`) names
+ * every quality, so it's read first; `stream_url` often only exposes HD on web rooms.
+ */
+function streams(room: any): { hls?: string; flv?: string } {
+  const api = room.stream_url ?? room.streamUrl;
+  let hls: string | undefined;
+  let flv: string | undefined;
+  const raw =
+    room.streamData?.pull_data?.stream_data ??
+    api?.live_core_sdk_data?.pull_data?.stream_data;
+  if (typeof raw === 'string' && raw.length <= 2e5) {
+    try {
+      const qualities = JSON.parse(raw)?.data ?? {};
+      const main = QUALITIES.map((q) => qualities[q]?.main).find(
+        (m) => m?.hls || m?.flv,
+      );
+      hls = main?.hls || undefined;
+      flv = main?.flv || undefined;
+    } catch {
+      /* malformed stream data */
+    }
+  }
+  hls ??= api?.hls_pull_url;
+  flv ??= FLV_KEYS.map((k) => api?.flv_pull_url?.[k]).find(Boolean);
+  return { hls: imageUrl(hls), flv: imageUrl(flv) };
+}
+
 /** Parse only room-shaped objects; never infer a live from an ordinary user profile. */
 export function parseRooms(payload: unknown): LiveCandidate[] {
   const result = new Map<string, LiveCandidate>();
@@ -33,6 +64,9 @@ export function parseRooms(payload: unknown): LiveCandidate[] {
       room.id_str ??
       room.room_id ??
       room.roomId ??
+      // TikTok's HTML/API-live response keeps the ID on the sibling user,
+      // while liveRoom contains status, title and streams (without roomId).
+      (value.liveRoom ? value.user?.roomId : undefined) ??
       (room.owner ? room.id : undefined);
     if (
       username &&
@@ -41,10 +75,18 @@ export function parseRooms(payload: unknown): LiveCandidate[] {
       (room.status === undefined || Number(room.status) === 2)
     ) {
       const tags = (room.hashtags ?? room.tags ?? []).slice?.(0, 30);
+      const { hls, flv } = streams(room);
       result.set(username, {
+        // Only set when present, so merging a probe without streams keeps the discovered ones.
+        ...(hls ? { streamHlsUrl: hls } : {}),
+        ...(flv ? { streamFlvUrl: flv } : {}),
         username,
         roomId: String(roomId),
         title: String(room.title ?? '').slice(0, 500),
+        nickname: typeof owner.nickname === 'string' ? owner.nickname.slice(0, 200) : undefined,
+        bio: typeof (owner.bio_description ?? owner.signature) === 'string'
+          ? (owner.bio_description ?? owner.signature).slice(0, 1000)
+          : undefined,
         viewerCount: viewerCount(
           room.user_count ??
             room.userCount ??

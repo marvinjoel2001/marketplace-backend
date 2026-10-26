@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS "TikTokLive" (
     "viewerCount" INTEGER NOT NULL DEFAULT 0,
     "avatarUrl" TEXT,
     "coverImageUrl" TEXT,
+    "streamHlsUrl" TEXT,
+    "streamFlvUrl" TEXT,
     "tags" TEXT NOT NULL DEFAULT '[]',
     "category" TEXT NOT NULL DEFAULT 'Otros',
     "isSelling" BOOLEAN NOT NULL DEFAULT false,

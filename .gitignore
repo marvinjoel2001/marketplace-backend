@@ -18,6 +18,7 @@ Thumbs.db
 # Tests
 /coverage
 /.nyc_output
+/.cache
 
 # IDEs
 .idea

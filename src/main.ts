@@ -1,11 +1,16 @@
 import { NestFactory } from '@nestjs/core';
 import { Logger } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { uploadRoot } from './modules/upload/upload.service';
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.enableShutdownHooks();
+  // Product photos travel as base64 in JSON; the upload service still caps each image at 5 MB.
+  app.useBodyParser('json', { limit: '8mb' });
+  app.useStaticAssets(uploadRoot(), { prefix: '/uploads/', maxAge: '30d', index: false });
 
   // Global prefix
   app.setGlobalPrefix('api/v1');

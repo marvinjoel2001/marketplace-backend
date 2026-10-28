@@ -5,7 +5,8 @@ export interface SocialLoginDto {
   email: string;
   name: string;
   avatar?: string;
-  provider?: string; // TIKTOK, GOOGLE, FACEBOOK
+  provider?: string; // TIKTOK, GOOGLE, FACEBOOK, PHONE
+  phone?: string;
   visitorId?: string;
   interestProfile?: string;
   cart?: string;
@@ -13,12 +14,22 @@ export interface SocialLoginDto {
 
 export interface EnrichProfileDto {
   userId: string;
-  phone: string;
+  phone?: string;
+  name?: string;
   city?: string;
   zone?: string;
   address: string;
   addressReference?: string;
+  lat?: number | string;
+  lng?: number | string;
   nitOrCi?: string;
+}
+
+/** Bolivian mobile numbers: 8 digits, optionally prefixed with 591. Returns null when invalid. */
+export function normalizeBoliviaPhone(input: string): string | null {
+  const digits = input.replace(/\D/g, '');
+  const national = digits.startsWith('591') ? digits.slice(3) : digits;
+  return /^[67]\d{7}$/.test(national) ? `+591 ${national}` : null;
 }
 
 export interface SyncInterestsDto {
@@ -37,6 +48,10 @@ export class AuthService {
     }
 
     const provider = dto.provider || 'TIKTOK';
+    const phone = dto.phone ? normalizeBoliviaPhone(dto.phone) : null;
+    if (dto.phone && !phone) {
+      throw new BadRequestException('Escribe un celular boliviano de 8 dígitos, por ejemplo 71234567');
+    }
 
     let user = await this.prisma.user.findUnique({
       where: { email: dto.email.toLowerCase() },
@@ -52,6 +67,7 @@ export class AuthService {
           name: dto.name,
           avatar: dto.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(dto.name)}`,
           provider,
+          phone,
           interestProfile: dto.interestProfile || null,
           savedCart: dto.cart || null,
         },
@@ -108,7 +124,7 @@ export class AuthService {
       isProfileComplete,
       message: isProfileComplete
         ? 'Sesión iniciada con éxito'
-        : 'Perfil requiere enriquecimiento de datos para despacho OpenDSP',
+        : 'Falta tu dirección de entrega',
     };
   }
 
@@ -125,26 +141,33 @@ export class AuthService {
       throw new NotFoundException(`Usuario con ID ${dto.userId} no encontrado`);
     }
 
-    // Bolivian phone validation: 8 digits required (e.g. 77012345 or +591 77012345)
-    const digitsOnly = dto.phone.replace(/\D/g, '');
-    const nationalDigits = digitsOnly.startsWith('591') ? digitsOnly.slice(3) : digitsOnly;
-
-    if (nationalDigits.length !== 8) {
+    // The phone may already be known (phone sign-in); otherwise the driver needs one to call.
+    const cleanPhone = dto.phone ? normalizeBoliviaPhone(dto.phone) : user.phone;
+    if (!cleanPhone) {
       throw new BadRequestException(
         'El número de celular debe contener 8 dígitos bolivianos (ej. 77012345 o 68912345)'
       );
     }
-
-    const cleanPhone = `+591 ${nationalDigits}`;
+    if (!dto.address || !String(dto.address).trim()) {
+      throw new BadRequestException('Escribe o marca tu dirección de entrega');
+    }
+    const lat = dto.lat === undefined || dto.lat === null ? user.lat ?? null : Number(dto.lat);
+    const lng = dto.lng === undefined || dto.lng === null ? user.lng ?? null : Number(dto.lng);
+    if ((lat !== null && !Number.isFinite(lat)) || (lng !== null && !Number.isFinite(lng))) {
+      throw new BadRequestException('La ubicación del mapa no es válida');
+    }
 
     const updatedUser = await this.prisma.user.update({
       where: { id: user.id },
       data: {
         phone: cleanPhone,
+        name: dto.name?.trim() || user.name,
         city: dto.city || user.city || 'Santa Cruz de la Sierra',
         zone: dto.zone || user.zone,
-        address: dto.address,
-        addressReference: dto.addressReference || user.addressReference,
+        address: String(dto.address).trim(),
+        addressReference: dto.addressReference ?? user.addressReference,
+        lat,
+        lng,
         nitOrCi: dto.nitOrCi || user.nitOrCi,
       },
     });

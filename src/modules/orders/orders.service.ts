@@ -1,9 +1,34 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DspService } from '../dsp/dsp.service';
+import { effectivePrice } from '../products/pricing';
+import { isBookableWindow, windowLabel } from '../stores/delivery-schedule';
+
+/** The driver is requested this long before the window starts, so they reach the store on time. */
+export const DISPATCH_BEFORE_MINUTES = 20;
+export const PAYMENT_METHODS = ['CASH_ON_DELIVERY', 'QR_ON_DELIVERY'] as const;
+const COMMISSION_RATE = 0.05;
+
+export interface CreateOrderDto {
+  userId?: string;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  customerReference?: string;
+  customerLat?: number | string;
+  customerLng?: number | string;
+  paymentMethod?: string;
+  deliveryAt?: string;
+  items: { productOfferId?: string; quantity?: number | string }[];
+}
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+  private dispatching = false;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly dspService: DspService,
@@ -17,8 +42,17 @@ export class OrdersService {
     });
   }
 
+  async findByUser(userId: string) {
+    return this.prisma.order.findMany({
+      where: { userId },
+      include: { items: true },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+  }
+
   async findByIdOrNumber(idOrNumber: string) {
-    let order = await this.prisma.order.findFirst({
+    const order = await this.prisma.order.findFirst({
       where: {
         OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }, { dspTrackingToken: idOrNumber }],
       },
@@ -28,163 +62,198 @@ export class OrdersService {
         },
       },
     });
-
-    if (!order) {
-      // Fallback demo order for interactive tracking
-      return {
-        id: 'demo-order-id',
-        orderNumber: idOrNumber || 'CY-894120-412',
-        customerName: 'Juan Pérez',
-        customerEmail: 'juan.perez@example.com',
-        customerPhone: '+591 77098765',
-        customerAddress: 'Av. San Martín, Calle 5 Oeste, Equipetrol, Santa Cruz',
-        customerLat: -17.7695,
-        customerLng: -63.194,
-        paymentMethod: 'QR_SIMPLE',
-        paymentStatus: 'PAID',
-        totalAmount: 189,
-        subtotal: 189,
-        shippingFee: 0,
-        status: 'IN_TRANSIT',
-        dspQuoteId: 'dsp_q_991823',
-        dspOrderId: 'dsp_ord_77189',
-        dspTrackingToken: 'trk_tok_carlos_mendoza',
-        dspDriverName: 'Carlos Mendoza',
-        dspDriverPhone: '+591 77012345',
-        dspDriverRating: 4.9,
-        dspDriverPhoto: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150',
-        dspEstimatedMinutes: 18,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        items: [
-          {
-            id: 'item-1',
-            orderId: 'demo-order-id',
-            productOfferId: 'off-1',
-            storeId: 'store-1',
-            productTitle: 'Chompa Oversize Beige - Talla M',
-            storeName: 'ModaBol (Tienda Oficial)',
-            quantity: 1,
-            unitPrice: 189,
-            subtotal: 189,
-            productImage: 'https://images.unsplash.com/photo-1576566588028-4147f3842f27?w=400',
-          },
-        ],
-      };
-    }
-
+    if (!order) throw new NotFoundException('Pedido no encontrado');
     return order;
   }
 
-  async create(data: {
-    customerName?: string;
-    customerEmail?: string;
-    customerPhone?: string;
-    customerAddress?: string;
-    customerLat?: number;
-    customerLng?: number;
-    paymentMethod?: string;
-    items: any[];
-    quoteId?: string;
-    shippingFee?: number | string;
-  }) {
-    const {
-      customerName = 'Juan Pérez',
-      customerEmail = 'juan.perez@example.com',
-      customerPhone = '+591 77098765',
-      customerAddress = 'Av. San Martín, Calle 5 Oeste, Equipetrol, Santa Cruz',
-      customerLat = -17.7695,
-      customerLng = -63.194,
-      paymentMethod = 'QR_SIMPLE',
-      items,
-      quoteId,
-      shippingFee = 0,
-    } = data;
+  /**
+   * Creates one order for one store. Prices, stock and shipping come from the database and the
+   * delivery quote, never from the client; the delivery window must be one the store offers.
+   */
+  async create(data: CreateOrderDto) {
+    const items = Array.isArray(data.items) ? data.items : [];
+    if (items.length === 0) throw new BadRequestException('El carrito no tiene productos');
 
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      throw new BadRequestException('El carrito no tiene productos');
+    const name = String(data.customerName ?? '').trim();
+    const phone = String(data.customerPhone ?? '').trim();
+    const address = String(data.customerAddress ?? '').trim();
+    const lat = Number(data.customerLat);
+    const lng = Number(data.customerLng);
+    if (!name || !phone || !address)
+      throw new BadRequestException('Faltan tu nombre, teléfono o dirección de entrega');
+    if (!Number.isFinite(lat) || !Number.isFinite(lng))
+      throw new BadRequestException('Marca tu dirección en el mapa');
+
+    const paymentMethod = PAYMENT_METHODS.includes(data.paymentMethod as never)
+      ? (data.paymentMethod as string)
+      : 'CASH_ON_DELIVERY';
+
+    const quantities = new Map<string, number>();
+    for (const item of items) {
+      const id = String(item.productOfferId ?? '');
+      const qty = Number(item.quantity ?? 1);
+      if (!id || !Number.isInteger(qty) || qty < 1 || qty > 99)
+        throw new BadRequestException('Revisa las cantidades del carrito');
+      quantities.set(id, (quantities.get(id) ?? 0) + qty);
     }
 
-    const orderNumber = `CY-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
-    const subtotal = items.reduce((sum: number, item: any) => sum + (item.unitPrice || 0) * (item.quantity || 1), 0);
-    const parsedShippingFee = typeof shippingFee === 'string' ? parseFloat(shippingFee) : shippingFee;
-    const totalAmount = subtotal + parsedShippingFee;
+    const offers = await this.prisma.productOffer.findMany({
+      where: { id: { in: [...quantities.keys()] } },
+      include: { product: true, store: true },
+    });
+    if (offers.length !== quantities.size || offers.some((o) => !o.isActive || o.store.status !== 'ACTIVE'))
+      throw new BadRequestException('Algún producto del carrito ya no está disponible');
 
-    // Split financiero: 5% comisión Marketplace, 95% para la tienda
-    const commissionRate = 0.05;
-    const platformCommission = Number((subtotal * commissionRate).toFixed(2));
-    const vendorEarnings = Number((subtotal * (1 - commissionRate)).toFixed(2));
+    const store = offers[0].store;
+    if (offers.some((o) => o.storeId !== store.id))
+      throw new BadRequestException('Cada pedido debe ser de una sola tienda');
+    for (const offer of offers) {
+      if ((quantities.get(offer.id) ?? 0) > offer.stock)
+        throw new BadRequestException(`Solo quedan ${offer.stock} de "${offer.product.title}"`);
+    }
 
-    // Obtener datos de la tienda para la recogida
-    const primaryItem = items[0];
-    const storeLat = primaryItem.storeLat || -17.7685;
-    const storeLng = primaryItem.storeLng || -63.1952;
-    const storeAddress = primaryItem.storeAddress || 'Equipetrol, Santa Cruz';
+    const deliveryAt = new Date(String(data.deliveryAt ?? ''));
+    if (!isBookableWindow(store, deliveryAt))
+      throw new BadRequestException('Elige un horario de entrega disponible para esta tienda');
 
-    // Despacho a OpenDSP
-    const dspResponse = await this.dspService.dispatchOrder({
-      quoteId: quoteId || `dsp_q_${Date.now()}`,
-      orderNumber,
-      customerName,
-      customerPhone,
-      customerAddress,
-      customerLat,
-      customerLng,
-      storeName: primaryItem.storeName || 'Tienda Oficial CompraYa',
-      storeAddress,
-      storeLat,
-      storeLng,
-      totalAmount,
-      paymentMethod,
+    const lines = offers.map((offer) => {
+      const quantity = quantities.get(offer.id) ?? 1;
+      const unitPrice = effectivePrice(offer);
+      let image = '';
+      try {
+        image = JSON.parse(offer.product.images || '[]')[0] || '';
+      } catch {
+        image = offer.product.images || '';
+      }
+      return { offer, quantity, unitPrice, subtotal: Math.round(unitPrice * quantity * 100) / 100, image };
     });
 
-    // Guardar orden
-    return this.prisma.order.create({
-      data: {
-        orderNumber,
-        customerName,
-        customerEmail,
-        customerPhone,
-        customerAddress,
-        customerLat,
-        customerLng,
-        paymentMethod,
-        paymentStatus: 'PAID',
-        totalAmount,
-        subtotal,
-        shippingFee: parsedShippingFee,
-        platformCommission,
-        vendorEarnings,
-        status: 'IN_TRANSIT',
-        dspQuoteId: quoteId,
-        dspOrderId: dspResponse.dspOrderId,
-        dspTrackingToken: dspResponse.trackingToken,
-        dspDriverName: dspResponse.driver?.name || 'Carlos Mendoza',
-        dspDriverPhone: dspResponse.driver?.phone || '+591 77012345',
-        dspDriverRating: dspResponse.driver?.rating || 4.9,
-        dspDriverPhoto: dspResponse.driver?.photoUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-        dspEstimatedMinutes: dspResponse.estimatedMinutes || 20,
-        items: {
-          create: items.map((it: any) => ({
-            productOfferId: it.productOfferId || null,
-            storeId: it.storeId || 'store-1',
-            productTitle: it.productTitle,
-            storeName: it.storeName || 'Tienda Oficial',
-            quantity: it.quantity || 1,
-            unitPrice: it.unitPrice || 0,
-            subtotal: (it.unitPrice || 0) * (it.quantity || 1),
-            productImage: it.productImage || '',
-          })),
+    const subtotal = Math.round(lines.reduce((sum, l) => sum + l.subtotal, 0) * 100) / 100;
+    const quote = await this.dspService.getQuote({
+      pickupLat: store.latitude,
+      pickupLng: store.longitude,
+      dropoffLat: lat,
+      dropoffLng: lng,
+    });
+    const shippingFee = quote.price;
+    const platformCommission = Number((subtotal * COMMISSION_RATE).toFixed(2));
+    const vendorEarnings = Number((subtotal - platformCommission).toFixed(2));
+    const orderNumber = `VT-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
+
+    const [order] = await this.prisma.$transaction([
+      this.prisma.order.create({
+        data: {
+          orderNumber,
+          userId: data.userId || null,
+          customerName: name,
+          customerEmail: String(data.customerEmail ?? ''),
+          customerPhone: phone,
+          customerAddress: address,
+          customerReference: String(data.customerReference ?? '').trim() || null,
+          customerLat: lat,
+          customerLng: lng,
+          paymentMethod,
+          paymentStatus: 'PENDING',
+          subtotal,
+          shippingFee,
+          totalAmount: Math.round((subtotal + shippingFee) * 100) / 100,
+          platformCommission,
+          vendorEarnings,
+          status: 'SCHEDULED',
+          storeId: store.id,
+          deliveryAt,
+          deliveryWindow: windowLabel(deliveryAt),
+          dspQuoteId: quote.quoteId,
+          dspDriverName: null,
+          dspDriverPhone: null,
+          dspDriverRating: null,
+          dspEstimatedMinutes: quote.estimatedMinutes,
+          items: {
+            create: lines.map((l) => ({
+              productOfferId: l.offer.id,
+              storeId: store.id,
+              productTitle: l.offer.product.title,
+              storeName: store.name,
+              quantity: l.quantity,
+              unitPrice: l.unitPrice,
+              subtotal: l.subtotal,
+              productImage: l.image,
+            })),
+          },
         },
-      },
-      include: {
-        items: true,
+        include: { items: true },
+      }),
+      ...lines.map((l) =>
+        this.prisma.productOffer.update({
+          where: { id: l.offer.id },
+          data: { stock: { decrement: l.quantity } },
+        }),
+      ),
+    ]);
+    return order;
+  }
+
+  /** Requests the driver for scheduled orders whose window is about to start. */
+  @Interval(60_000)
+  async dispatchDueOrders(now = new Date()) {
+    if (this.dispatching) return;
+    this.dispatching = true;
+    try {
+      const due = await this.prisma.order.findMany({
+        where: {
+          status: 'SCHEDULED',
+          dispatchedAt: null,
+          deliveryAt: { lte: new Date(now.getTime() + DISPATCH_BEFORE_MINUTES * 60_000) },
+        },
+        include: { items: true },
+        take: 20,
+      });
+      for (const order of due) await this.dispatch(order);
+    } catch (error) {
+      this.logger.warn(`No se pudieron despachar pedidos programados: ${(error as Error).message}`);
+    } finally {
+      this.dispatching = false;
+    }
+  }
+
+  private async dispatch(order: { id: string; orderNumber: string; storeId: string | null; [key: string]: any }) {
+    const store = order.storeId
+      ? await this.prisma.store.findUnique({ where: { id: order.storeId } })
+      : null;
+    if (!store) return;
+    const response = await this.dspService.dispatchOrder({
+      quoteId: order.dspQuoteId || `dsp_q_${Date.now()}`,
+      orderNumber: order.orderNumber,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      customerAddress: [order.customerAddress, order.customerReference].filter(Boolean).join(' — '),
+      customerLat: order.customerLat,
+      customerLng: order.customerLng,
+      storeName: store.name,
+      storeAddress: [store.address, store.addressReference].filter(Boolean).join(' — '),
+      storeLat: store.latitude,
+      storeLng: store.longitude,
+      totalAmount: order.totalAmount,
+      paymentMethod: order.paymentMethod,
+    });
+    await this.prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'DSP_DISPATCHED',
+        dispatchedAt: new Date(),
+        dspOrderId: response.dspOrderId,
+        dspTrackingToken: response.trackingToken,
+        dspDriverName: response.driver?.name ?? null,
+        dspDriverPhone: response.driver?.phone ?? null,
+        dspDriverRating: response.driver?.rating ?? null,
+        dspDriverPhoto: response.driver?.photoUrl ?? null,
+        dspEstimatedMinutes: response.estimatedMinutes,
       },
     });
   }
 
   async updateStatus(idOrNumber: string, newStatus: string) {
-    const validStatuses = ['PENDING', 'CONFIRMED', 'PREPARING', 'DSP_DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'];
+    const validStatuses = ['PENDING', 'SCHEDULED', 'CONFIRMED', 'PREPARING', 'DSP_DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'];
     if (!validStatuses.includes(newStatus)) {
       throw new BadRequestException(`Estado no válido: ${newStatus}. Estados válidos: ${validStatuses.join(', ')}`);
     }
@@ -212,7 +281,7 @@ export class OrdersService {
 
     // Si el estado pasa a DELIVERED, abonar las ganancias a la billetera de la tienda
     if (newStatus === 'DELIVERED' && order.status !== 'DELIVERED' && order.vendorEarnings) {
-      const primaryStoreId = order.items?.[0]?.storeId;
+      const primaryStoreId = order.storeId || order.items?.[0]?.storeId;
       if (primaryStoreId) {
         const store = await this.prisma.store.findUnique({ where: { id: primaryStoreId } });
         if (store) {
@@ -247,4 +316,3 @@ export class OrdersService {
     return this.updateStatus(orderRef, targetStatus);
   }
 }
-

@@ -10,6 +10,11 @@ export class OrdersController {
     return this.ordersService.findAll(limit ? parseInt(limit, 10) : 20);
   }
 
+  @Get('user/:userId')
+  async getByUser(@Param('userId') userId: string) {
+    return this.ordersService.findByUser(userId);
+  }
+
   @Get(':idOrNumber')
   async getOne(@Param('idOrNumber') idOrNumber: string) {
     return this.ordersService.findByIdOrNumber(idOrNumber);

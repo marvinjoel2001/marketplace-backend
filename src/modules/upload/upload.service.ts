@@ -9,11 +9,16 @@ export interface UploadImageDto {
   folder?: 'products' | 'stores' | 'banners' | 'general';
 }
 
+/** Where uploaded images live. Set UPLOAD_DIR to a persistent volume in production (e.g. /data/uploads). */
+export function uploadRoot(): string {
+  return path.resolve(process.env.UPLOAD_DIR || path.join(process.cwd(), 'public', 'uploads'));
+}
+
 @Injectable()
 export class UploadService {
   private readonly allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
   private readonly maxSizeBytes = 5 * 1024 * 1024; // 5 MB
-  private readonly uploadDir = path.join(process.cwd(), 'public', 'uploads');
+  private readonly uploadDir = uploadRoot();
 
   constructor() {
     // Asegurar que el directorio de subidas exista
@@ -53,6 +58,9 @@ export class UploadService {
       );
     }
 
+    if (!['products', 'stores', 'banners', 'general'].includes(folder)) {
+      throw new BadRequestException('Carpeta de destino no válida');
+    }
     const targetSubdir = path.join(this.uploadDir, folder);
     if (!fs.existsSync(targetSubdir)) {
       fs.mkdirSync(targetSubdir, { recursive: true });

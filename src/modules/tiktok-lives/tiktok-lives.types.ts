@@ -1,4 +1,8 @@
-export const LIVE_TTL_SECONDS = 60;
+// A room counts as live this long after it was seen in the feed or verified. Shorter windows force a
+// probe per room every minute, and TikTok starts refusing those requests from the same IP.
+export const LIVE_TTL_SECONDS = 180;
+/** Active rooms are re-probed only once their last verification is this old. */
+export const REVERIFY_AFTER_SECONDS = 120;
 // Freshness, temporary verification grace, and snapshot caching are separate.
 export const LIVE_RETENTION_SECONDS = 300;
 export const LIVE_CACHE_SECONDS = 15;

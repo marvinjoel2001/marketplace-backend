@@ -39,3 +39,9 @@ Thumbs.db
 *.db-journal
 prisma/*.db
 prisma/*.db-journal
+
+# Perfil de Chromium con la sesión de TikTok del operador (contiene cookies de sesión)
+.tiktok-profile/
+
+# Uploaded product and store photos (UPLOAD_DIR)
+public/uploads/

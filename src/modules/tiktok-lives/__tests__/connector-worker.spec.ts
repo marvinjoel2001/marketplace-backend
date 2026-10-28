@@ -259,13 +259,60 @@ describe('TikTok worker freshness and failure handling', () => {
     expect(lives.saveVerified).toHaveBeenCalledTimes(1);
     expect(connector.probe).toHaveBeenCalledWith('tienda', live.roomId);
   });
-  it('verifica vendedores antes de aplicar el filtro regional de la información completa', async () => {
+  it('guarda salas vistas en el feed sin otra consulta y deja el filtro regional a saveVerified', async () => {
     config.requireRegion = true;
     const discovery = (worker as any).discovery;
-    discovery.discover.mockResolvedValue([{ ...live, title: 'Remate de ropa', tags: [] }]);
+    const sighted = { ...live, title: 'Remate de ropa', tags: [] };
+    discovery.discover.mockResolvedValue([sighted]);
     await worker.discover();
-    expect(connector.probe).toHaveBeenCalledWith('tienda', live.roomId);
-    expect(lives.saveVerified).toHaveBeenCalledTimes(1);
+    expect(connector.probe).not.toHaveBeenCalled();
+    expect(lives.saveVerified).toHaveBeenCalledWith(sighted);
+  });
+  it('consulta por HTTP los candidatos sin sala y las tiendas registradas vistas en el feed', async () => {
+    const discovery = (worker as any).discovery;
+    discovery.discover.mockResolvedValue([
+      { ...live, username: 'sin_sala', roomId: undefined, title: 'Remate de ropa' },
+      { ...live, username: 'registrada', title: 'Remate de ropa' },
+    ]);
+    prisma.tikTokAccount.findUnique.mockImplementation(async ({ where }: any) =>
+      where.username === 'registrada' ? { username: 'registrada', store: null } : null,
+    );
+    connector.probe.mockImplementation(async (username: string) => ({ live: { ...live, username } }));
+    await worker.discover();
+    expect(connector.probe.mock.calls.map(([username]) => username).sort()).toEqual(['registrada', 'sin_sala']);
+  });
+  it('solo re-verifica salas cuya última verificación ya tiene más de 2 minutos', async () => {
+    await worker.refreshActive();
+    const { where } = prisma.tikTokLive.findMany.mock.calls[0][0];
+    expect(where.status).toBe('ACTIVE');
+    expect(Date.now() - where.verifiedAt.lt.getTime()).toBeGreaterThanOrEqual(120000);
+  });
+  it('pausa todas las verificaciones cuando TikTok rechaza muchas seguidas', async () => {
+    connector.probe.mockRejectedValue(new Error('403'));
+    const verify = (username: string) => (worker as any).verify(username, { ...live, username });
+    for (let i = 0; i < 12; i++) await verify(`cuenta_${i}`);
+    expect(connector.probe).toHaveBeenCalledTimes(8);
+    expect(lives.markEnded).not.toHaveBeenCalled();
+  });
+  it('alarga la pausa global si TikTok sigue rechazando aunque alguna verificación pase', async () => {
+    let now = 100000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const verify = (username: string) => (worker as any).verify(username, { ...live, username });
+      const failBurst = async (prefix: string) => {
+        connector.probe.mockRejectedValue(new Error('403'));
+        for (let i = 0; i < 8; i++) await verify(`${prefix}_${i}`);
+      };
+      await failBurst('a');
+      now += 36000; // first pause: ~30-35s
+      connector.probe.mockResolvedValue({ live });
+      await verify('suerte');
+      await failBurst('b');
+      now += 36000;
+      expect((worker as any).retry.ready('probes', now)).toBe(false); // second pause doubled
+      now += 30000;
+      expect((worker as any).retry.ready('probes', now)).toBe(true);
+    } finally { clock.mockRestore(); }
   });
   it('no renueva verificaciones ni anuncia fin cuando TikTok bloquea la consulta', async () => {
     connector.probe.mockRejectedValue(new Error('captcha'));

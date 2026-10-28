@@ -39,7 +39,14 @@ export class ProductsService {
     }
 
     if (flashSale) {
-      whereClause.isFlashSale = true;
+      whereClause.offers = {
+        some: {
+          isActive: true,
+          isFlashSale: true,
+          flashSaleEnd: { gt: new Date() },
+          store: { status: 'ACTIVE' },
+        },
+      };
     }
 
     if (q) {
@@ -65,7 +72,7 @@ export class ProductsService {
   }
 
   async findBySlugOrId(idOrSlug: string) {
-    let product = await this.prisma.product.findFirst({
+    const product = await this.prisma.product.findFirst({
       where: {
         OR: [{ id: idOrSlug }, { slug: idOrSlug }],
       },
@@ -78,20 +85,6 @@ export class ProductsService {
         },
       },
     });
-
-    if (!product) {
-      // Fallback demo a producto de referencia si no existe
-      product = await this.prisma.product.findFirst({
-        where: { slug: 'chompa-oversize-beige-talla-m' },
-        include: {
-          category: true,
-          offers: {
-            include: { store: true },
-            orderBy: { price: 'asc' },
-          },
-        },
-      });
-    }
 
     if (!product) throw new NotFoundException('Producto no encontrado');
     return product;
@@ -157,24 +150,14 @@ export class ProductsService {
       throw new BadRequestException('No se encontró una categoría válida para el producto');
     }
 
-    // Resolve Store dynamically (by id, slug, or name; fallback to first available)
-    let targetStore = null;
-    if (storeId) {
-      targetStore = await this.prisma.store.findFirst({
-        where: {
-          OR: [
-            { id: storeId },
-            { slug: storeId },
-            { name: storeId },
-          ],
-        },
-      });
-    }
+    // A product is always published by the store that uploads it.
+    const targetStore = storeId
+      ? await this.prisma.store.findFirst({
+          where: { OR: [{ id: storeId }, { slug: storeId }] },
+        })
+      : null;
     if (!targetStore) {
-      targetStore = await this.prisma.store.findFirst();
-    }
-    if (!targetStore) {
-      throw new BadRequestException('No se encontró una tienda válida para publicar la oferta');
+      throw new BadRequestException('No se encontró la tienda que publica el producto');
     }
 
     const slug = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
@@ -195,7 +178,7 @@ export class ProductsService {
         specifications: typeof specifications === 'object' ? JSON.stringify(specifications) : specifications || '{}',
         color: color || '',
         material: material || '',
-        warranty: warranty || '7 días',
+        warranty: warranty || null,
         hasInvoice: Boolean(hasInvoice),
         offers: {
           create: {
@@ -203,7 +186,7 @@ export class ProductsService {
             price: numericPrice,
             stock: typeof stock === 'string' ? parseInt(stock, 10) : Number(stock) || 10,
             shippingCost: 0,
-            estimatedDelivery: 'Llega en 24-48 hrs con OpenDSP',
+            estimatedDelivery: '',
             isRecommended: true,
           },
         },

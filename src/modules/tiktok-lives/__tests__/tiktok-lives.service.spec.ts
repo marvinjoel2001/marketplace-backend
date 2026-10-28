@@ -83,7 +83,7 @@ describe('TikTokLivesService/API', () => {
   });
   it('conserva salas pendientes sin renovar su verificación durante un fallo temporal', async () => {
     const data = (await service.active({})).data;
-    const verifiedAt = new Date(Date.now() - 61000).toISOString();
+    const verifiedAt = new Date(Date.now() - 181000).toISOString();
     cache.read.mockResolvedValue([{ ...data[0], verified_at: verifiedAt }]);
     const response = await service.active({});
     expect(response.data[0]).toMatchObject({ verified_at: verifiedAt, verification_status: 'refreshing' });
@@ -100,7 +100,7 @@ describe('TikTokLivesService/API', () => {
   it('ordena las salas recién verificadas antes que las pendientes con más espectadores', async () => {
     const data = (await service.active({})).data;
     cache.read.mockResolvedValue([
-      { ...data[0], username: 'pendiente', viewer_count: 1000, verified_at: new Date(Date.now() - 61000).toISOString() },
+      { ...data[0], username: 'pendiente', viewer_count: 1000, verified_at: new Date(Date.now() - 181000).toISOString() },
       { ...data[0], username: 'activa', viewer_count: 1 },
     ]);
     const response = await service.active({});

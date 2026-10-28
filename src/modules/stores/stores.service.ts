@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { LIVE_TTL_SECONDS } from '../tiktok-lives/tiktok-lives.types';
+import { normalizeSchedule } from './delivery-schedule';
 
 @Injectable()
 export class StoresService {
@@ -29,7 +31,7 @@ export class StoresService {
   }
 
   async findBySlugOrId(idOrSlug: string) {
-    let store = await this.prisma.store.findFirst({
+    const store = await this.prisma.store.findFirst({
       where: {
         OR: [{ id: idOrSlug }, { slug: idOrSlug }],
       },
@@ -50,27 +52,6 @@ export class StoresService {
       },
     });
 
-    if (!store) {
-      // Fallback a tienda de demo techplus-bolivia
-      store = await this.prisma.store.findFirst({
-        where: { slug: 'techplus-bolivia' },
-        include: {
-          offers: {
-            where: { isActive: true },
-            include: {
-              product: {
-                include: { category: true },
-              },
-            },
-          },
-          liveStreams: {
-            where: { status: 'LIVE' },
-            take: 1,
-          },
-        },
-      });
-    }
-
     if (!store) throw new NotFoundException('Tienda no encontrada');
     return store;
   }
@@ -87,44 +68,330 @@ export class StoresService {
     tiktokLiveUrl?: string;
     latitude?: number | string;
     longitude?: number | string;
+    ownerId?: string;
+    [key: string]: unknown;
   }) {
-    const {
-      name,
-      category,
-      address,
-      phone,
-      description,
-      logo,
-      banner,
-      tiktokUsername,
-      tiktokLiveUrl,
-      latitude = -17.7833,
-      longitude = -63.1821,
-    } = data;
+    const { name, category, address, ownerId } = data;
 
     if (!name || !category || !address) {
       throw new BadRequestException('Nombre, categoría y dirección son obligatorios');
     }
 
-    const slug = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
+    if (ownerId) {
+      const owner = await this.prisma.user.findUnique({ where: { id: ownerId } });
+      if (!owner) throw new BadRequestException('Inicia sesión antes de crear tu tienda');
+      const existing = await this.prisma.store.findFirst({ where: { ownerId } });
+      if (existing) return existing;
+    }
 
-    return this.prisma.store.create({
+    const slug = `${name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${Date.now().toString().slice(-4)}`;
+    const settings = this.settingsData(data);
+
+    const store = await this.prisma.store.create({
       data: {
-        name,
         slug,
-        category,
-        address,
-        phone,
-        description: description || `Tienda oficial de ${name} en CompraYa`,
-        logo: logo || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-        banner: banner || 'https://images.unsplash.com/photo-1441986300917-64674bd600d8?w=1200&auto=format&fit=crop&q=80',
-        tiktokUsername,
-        tiktokLiveUrl,
-        latitude: typeof latitude === 'string' ? parseFloat(latitude) : latitude,
-        longitude: typeof longitude === 'string' ? parseFloat(longitude) : longitude,
-        isOfficial: true,
+        name: String(name).trim(),
+        category: String(category),
+        address: String(address),
+        description: `Tienda ${name}`,
+        logo: '',
+        isOfficial: false,
         rating: 5.0,
+        ownerId: ownerId || null,
+        ...settings,
       },
+    });
+
+    if (ownerId) {
+      await this.prisma.user.update({
+        where: { id: ownerId },
+        data: { storeId: store.id, role: 'VENDOR' },
+      });
+    }
+    return store;
+  }
+
+  async findByOwner(userId: string) {
+    const store = await this.prisma.store.findFirst({ where: { ownerId: userId } });
+    if (!store) throw new NotFoundException('Este usuario todavía no tiene tienda');
+    return store;
+  }
+
+  /** Settings the store edits from its panel. Other columns (status, wallet, ownership) stay out of reach. */
+  async update(idOrSlug: string, data: Record<string, unknown>) {
+    const store = await this.resolve(idOrSlug);
+    return this.prisma.store.update({
+      where: { id: store.id },
+      data: this.settingsData(data),
+    });
+  }
+
+  private settingsData(data: Record<string, unknown>) {
+    const out: Record<string, unknown> = {};
+    const text = (key: string, max = 300) => {
+      if (data[key] === undefined) return;
+      const value = data[key] === null ? '' : String(data[key]).trim().slice(0, max);
+      out[key] = value;
+    };
+    text('name', 80);
+    text('description', 500);
+    text('category', 60);
+    text('phone', 30);
+    text('address', 300);
+    text('addressReference', 300);
+    text('logo', 500);
+    text('banner', 500);
+    text('payoutQr', 500);
+    if (out.name === '') throw new BadRequestException('El nombre de la tienda no puede quedar vacío');
+
+    for (const key of ['latitude', 'longitude'] as const) {
+      if (data[key] === undefined) continue;
+      const value = Number(data[key]);
+      const limit = key === 'latitude' ? 90 : 180;
+      if (!Number.isFinite(value) || Math.abs(value) > limit)
+        throw new BadRequestException('Marca la ubicación de la tienda en el mapa');
+      out[key] = value;
+    }
+
+    if (data.bankAccountInfo !== undefined) {
+      const raw = (typeof data.bankAccountInfo === 'string'
+        ? JSON.parse(data.bankAccountInfo || '{}')
+        : data.bankAccountInfo) as Record<string, unknown> | null;
+      const pick = (k: string) => String(raw?.[k] ?? '').trim().slice(0, 80);
+      out.bankAccountInfo = JSON.stringify({
+        bank: pick('bank'),
+        account: pick('account'),
+        holder: pick('holder'),
+        document: pick('document'),
+      });
+    }
+
+    if (data.tiktokUsername !== undefined) {
+      const username = String(data.tiktokUsername ?? '').trim().replace(/^@/, '').toLowerCase();
+      if (username && !/^[a-z0-9_][a-z0-9_.]{0,23}$/.test(username))
+        throw new BadRequestException('Usuario de TikTok inválido');
+      out.tiktokUsername = username || null;
+      out.tiktokLiveUrl = username ? `https://www.tiktok.com/@${username}/live` : null;
+    }
+
+    Object.assign(
+      out,
+      normalizeSchedule({
+        deliveryDays: data.deliveryDays as string | undefined,
+        deliveryStart: data.deliveryStart as string | undefined,
+        deliveryEnd: data.deliveryEnd as string | undefined,
+      }),
+    );
+    return out;
+  }
+
+  private async resolve(idOrSlug: string) {
+    const store = await this.prisma.store.findFirst({
+      where: { OR: [{ id: idOrSlug }, { slug: idOrSlug }] },
+    });
+    if (!store) throw new NotFoundException('Tienda no encontrada');
+    return store;
+  }
+
+  // ====================================================
+  // EN VIVO, VENTAS Y MÉTRICAS
+  // ====================================================
+
+  /** Registered stores that are live right now: started from the panel or seen live on TikTok. */
+  async findLive() {
+    const fresh = new Date(Date.now() - LIVE_TTL_SECONDS * 1000);
+    const stores = await this.prisma.store.findMany({
+      where: {
+        status: 'ACTIVE',
+        OR: [
+          { liveStreams: { some: { status: 'LIVE' } } },
+          { discoveredLives: { some: { status: 'ACTIVE', verifiedAt: { gte: fresh } } } },
+        ],
+      },
+      include: {
+        liveStreams: { where: { status: 'LIVE' }, orderBy: { startedAt: 'desc' }, take: 1 },
+        discoveredLives: { where: { status: 'ACTIVE', verifiedAt: { gte: fresh } }, take: 1 },
+        offers: { where: { isActive: true }, include: { product: true } },
+      },
+    });
+
+    return stores.map((store) => {
+      const stream = store.liveStreams[0];
+      const tiktok = store.discoveredLives[0];
+      const featured = (stream?.featuredProductIds ?? '').split(',').filter(Boolean);
+      const offers = featured.length
+        ? store.offers.filter((o) => featured.includes(o.productId))
+        : store.offers.slice(0, 12);
+      return {
+        store: {
+          id: store.id,
+          slug: store.slug,
+          name: store.name,
+          logo: store.logo,
+          tiktokUsername: store.tiktokUsername,
+        },
+        title: stream?.title || tiktok?.title || `${store.name} en vivo`,
+        viewerCount: tiktok?.viewerCount ?? 0,
+        coverImageUrl: tiktok?.coverImageUrl ?? null,
+        liveUrl: store.tiktokLiveUrl,
+        startedAt: stream?.startedAt ?? tiktok?.verifiedAt,
+        offers,
+      };
+    });
+  }
+
+  async getOrders(idOrSlug: string, since?: string) {
+    const store = await this.resolve(idOrSlug);
+    const sinceDate = since ? new Date(since) : null;
+    return this.prisma.order.findMany({
+      where: {
+        OR: [{ storeId: store.id }, { items: { some: { storeId: store.id } } }],
+        ...(sinceDate && !Number.isNaN(sinceDate.getTime()) ? { createdAt: { gt: sinceDate } } : {}),
+      },
+      include: { items: true },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
+  async getSummary(idOrSlug: string) {
+    const store = await this.resolve(idOrSlug);
+    const now = new Date();
+    // Day boundaries in Bolivia time (UTC-4).
+    const offset = 4 * 60 * 60 * 1000;
+    const local = new Date(now.getTime() - offset);
+    const startOfDay = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate()) + offset);
+    const startOfWeek = new Date(startOfDay.getTime() - ((local.getUTCDay() + 6) % 7) * 24 * 60 * 60 * 1000);
+    const startOfMonth = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), 1) + offset);
+
+    const orders = await this.prisma.order.findMany({
+      where: {
+        OR: [{ storeId: store.id }, { items: { some: { storeId: store.id } } }],
+        status: { not: 'CANCELLED' },
+        createdAt: { gte: new Date(Math.min(startOfWeek.getTime(), startOfMonth.getTime())) },
+      },
+      select: { subtotal: true, createdAt: true },
+    });
+    const sum = (from: Date) => {
+      const list = orders.filter((o) => o.createdAt >= from);
+      return { total: Math.round(list.reduce((s, o) => s + o.subtotal, 0) * 100) / 100, count: list.length };
+    };
+
+    const [upcoming, products, activeOffers] = await Promise.all([
+      this.prisma.order.findMany({
+        where: {
+          OR: [{ storeId: store.id }, { items: { some: { storeId: store.id } } }],
+          status: { in: ['SCHEDULED', 'CONFIRMED', 'DSP_DISPATCHED'] },
+        },
+        include: { items: true },
+        orderBy: { deliveryAt: 'asc' },
+        take: 5,
+      }),
+      this.prisma.productOffer.count({ where: { storeId: store.id, isActive: true } }),
+      this.prisma.productOffer.count({
+        where: { storeId: store.id, isActive: true, isFlashSale: true, flashSaleEnd: { gt: now } },
+      }),
+    ]);
+
+    return {
+      today: sum(startOfDay),
+      week: sum(startOfWeek),
+      month: sum(startOfMonth),
+      upcoming,
+      products,
+      activeOffers,
+    };
+  }
+
+  /** Puts several products on sale at once with the same discount and end date. */
+  async applyBulkOffer(
+    idOrSlug: string,
+    data: { offerIds?: string[]; discountPercent?: number | string; endsAt?: string },
+  ) {
+    const store = await this.resolve(idOrSlug);
+    const percent = Number(data.discountPercent);
+    if (!Number.isInteger(percent) || percent < 1 || percent > 90)
+      throw new BadRequestException('El descuento debe estar entre 1% y 90%');
+    const endsAt = new Date(String(data.endsAt));
+    const maxEnd = Date.now() + 90 * 24 * 60 * 60 * 1000;
+    if (Number.isNaN(endsAt.getTime()) || endsAt.getTime() <= Date.now() || endsAt.getTime() > maxEnd)
+      throw new BadRequestException('Elige hasta cuándo dura la oferta (máximo 90 días)');
+    const ids = Array.isArray(data.offerIds) ? data.offerIds.map(String) : [];
+    if (ids.length === 0) throw new BadRequestException('Elige al menos un producto');
+
+    const offers = await this.prisma.productOffer.findMany({
+      where: { id: { in: ids }, storeId: store.id },
+    });
+    if (offers.length === 0) throw new NotFoundException('Esos productos no son de esta tienda');
+
+    await this.prisma.$transaction(
+      offers.flatMap((offer) => [
+        this.prisma.productOffer.update({
+          where: { id: offer.id },
+          data: {
+            isFlashSale: true,
+            discountPercent: percent,
+            salePrice: Math.round(offer.price * (100 - percent)) / 100,
+            flashSaleEnd: endsAt,
+            promoBadge: 'OFERTA',
+          },
+        }),
+        this.prisma.product.update({
+          where: { id: offer.productId },
+          data: { isFlashSale: true, flashSaleEnd: endsAt, discountPercent: percent },
+        }),
+      ]),
+    );
+    return { updated: offers.length, discountPercent: percent, endsAt };
+  }
+
+  async endOffers(idOrSlug: string, offerIds: string[]) {
+    const store = await this.resolve(idOrSlug);
+    const offers = await this.prisma.productOffer.findMany({
+      where: { id: { in: (offerIds ?? []).map(String) }, storeId: store.id },
+    });
+    await this.prisma.$transaction(
+      offers.flatMap((offer) => [
+        this.prisma.productOffer.update({
+          where: { id: offer.id },
+          data: { isFlashSale: false, salePrice: null, discountPercent: 0, flashSaleEnd: null, promoBadge: null },
+        }),
+        this.prisma.product.update({
+          where: { id: offer.productId },
+          data: { isFlashSale: false, flashSaleEnd: null, discountPercent: 0 },
+        }),
+      ]),
+    );
+    return { updated: offers.length };
+  }
+
+  /** Price, stock and visibility of one of the store's products. */
+  async updateOffer(
+    idOrSlug: string,
+    offerId: string,
+    data: { price?: number | string; stock?: number | string; isActive?: boolean },
+  ) {
+    const store = await this.resolve(idOrSlug);
+    const offer = await this.prisma.productOffer.findFirst({ where: { id: offerId, storeId: store.id } });
+    if (!offer) throw new NotFoundException('Producto no encontrado en esta tienda');
+    const update: Record<string, unknown> = {};
+    if (data.price !== undefined) {
+      const price = Number(data.price);
+      if (!Number.isFinite(price) || price <= 0) throw new BadRequestException('El precio debe ser mayor a 0');
+      update.price = price;
+      if (offer.discountPercent && offer.isFlashSale)
+        update.salePrice = Math.round(price * (100 - offer.discountPercent)) / 100;
+    }
+    if (data.stock !== undefined) {
+      const stock = Number(data.stock);
+      if (!Number.isInteger(stock) || stock < 0) throw new BadRequestException('El stock no puede ser negativo');
+      update.stock = stock;
+    }
+    if (data.isActive !== undefined) update.isActive = Boolean(data.isActive);
+    return this.prisma.productOffer.update({
+      where: { id: offer.id },
+      data: update,
+      include: { product: { include: { category: true } } },
     });
   }
 

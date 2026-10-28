@@ -8,10 +8,11 @@ import { TikTokLiveCache } from './tiktok-live-cache.service';
 import { TikTokLivesService } from './tiktok-lives.service';
 import { TikTokLivesWorker } from './tiktok-lives.worker';
 import { TikTokLivesController } from './tiktok-lives.controller';
+import { TikTokSessionController } from './tiktok-session.controller';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
-  controllers: [TikTokLivesController],
+  controllers: [TikTokLivesController, TikTokSessionController],
   providers: [
     TikTokLivesConfig,
     EcommerceClassifier,

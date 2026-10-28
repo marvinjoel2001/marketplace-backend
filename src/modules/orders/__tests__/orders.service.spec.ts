@@ -85,38 +85,101 @@ describe('OrdersService', () => {
       expect(result.orderNumber).toBe('CY-123456-111');
     });
 
-    it('should return fallback demo order when order is not in DB', async () => {
+    it('should report a missing order instead of inventing one', async () => {
       mockPrisma.order.findFirst.mockResolvedValue(null);
 
-      const result = await service.findByIdOrNumber('CY-894120-412');
-      expect(result).toBeDefined();
-      expect(result.orderNumber).toBe('CY-894120-412');
-      expect(result.dspDriverName).toBe('Carlos Mendoza');
+      await expect(service.findByIdOrNumber('CY-894120-412')).rejects.toThrow('Pedido no encontrado');
     });
   });
 
   describe('create (TC-ORD-001 & TC-MONEY-001)', () => {
-    it('debería calcular el split financiero (5% comisión, 95% tienda)', async () => {
+    // Monday 10:00 in Bolivia (UTC-4).
+    const NOW = new Date('2026-11-02T14:00:00Z');
+    const store = {
+      id: 'store-1',
+      name: 'ModaBol',
+      status: 'ACTIVE',
+      latitude: -17.78,
+      longitude: -63.18,
+      deliveryDays: '1,2,3,4,5',
+      deliveryStart: '09:00',
+      deliveryEnd: '18:00',
+    };
+    const offer = {
+      id: 'off-1',
+      storeId: 'store-1',
+      productId: 'p1',
+      price: 100,
+      salePrice: 80,
+      isFlashSale: true,
+      flashSaleEnd: new Date('2026-11-05T00:00:00Z'),
+      stock: 5,
+      isActive: true,
+      product: { title: 'Producto A', images: '["https://img/a.jpg"]' },
+      store,
+    };
+    const base = {
+      customerName: 'Pedro Gómez',
+      customerPhone: '+591 70011223',
+      customerAddress: 'Calle 1',
+      customerLat: -17.77,
+      customerLng: -63.19,
+      items: [{ productOfferId: 'off-1', quantity: 2 }],
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers({ now: NOW, doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+      mockPrisma.productOffer = { findMany: jest.fn().mockResolvedValue([offer]), update: jest.fn() };
+      mockPrisma.$transaction = jest.fn((ops: Promise<unknown>[]) => Promise.all(ops));
       mockPrisma.order.create.mockImplementation((args) => Promise.resolve(args.data));
+    });
+    afterEach(() => jest.useRealTimers());
 
-      const result: any = await service.create({
-        customerName: 'Pedro Gómez',
-        customerPhone: '+591 70011223',
-        items: [
-          {
-            productTitle: 'Producto A',
-            quantity: 2,
-            unitPrice: 100, // Subtotal = 200
-            storeId: 'store-1',
-          },
-        ],
-        shippingFee: 15,
+    it('cobra el precio de la oferta vigente, suma el envío cotizado y separa la comisión', async () => {
+      const result: any = await service.create({ ...base, deliveryAt: '2026-11-02T16:00:00.000Z' });
+
+      expect(result.subtotal).toBe(160); // 2 × Bs 80, not the client's numbers
+      expect(result.shippingFee).toBe(15);
+      expect(result.totalAmount).toBe(175);
+      expect(result.platformCommission).toBe(8);
+      expect(result.vendorEarnings).toBe(152);
+      expect(result.status).toBe('SCHEDULED');
+      expect(result.deliveryWindow).toBe('12:00 - 13:00');
+      expect(mockPrisma.productOffer.update).toHaveBeenCalledWith({
+        where: { id: 'off-1' },
+        data: { stock: { decrement: 2 } },
       });
+      expect(mockDspService.dispatchOrder).not.toHaveBeenCalled();
+    });
 
-      expect(result.subtotal).toBe(200);
-      expect(result.totalAmount).toBe(215);
-      expect(result.platformCommission).toBe(10); // 5% de 200
-      expect(result.vendorEarnings).toBe(190); // 95% de 200
+    it('rechaza horarios que la tienda no ofrece', async () => {
+      // Saturday, outside the store's delivery days.
+      await expect(service.create({ ...base, deliveryAt: '2026-11-07T14:00:00.000Z' })).rejects.toThrow('horario');
+      // Starts in 30 minutes: too soon to pack.
+      await expect(service.create({ ...base, deliveryAt: '2026-11-02T14:30:00.000Z' })).rejects.toThrow('horario');
+    });
+
+    it('rechaza pedidos que superan el stock', async () => {
+      await expect(
+        service.create({ ...base, items: [{ productOfferId: 'off-1', quantity: 9 }], deliveryAt: '2026-11-02T16:00:00.000Z' }),
+      ).rejects.toThrow('Solo quedan 5');
+    });
+  });
+
+  describe('dispatchDueOrders', () => {
+    it('pide el repartidor solo cuando la ventana está por empezar', async () => {
+      mockPrisma.order.findMany.mockResolvedValue([
+        { id: 'o1', orderNumber: 'VT-1', storeId: 'store-1', customerName: 'Ana', customerPhone: '+591 70000000', customerAddress: 'Calle 2', customerLat: 0, customerLng: 0, totalAmount: 50, paymentMethod: 'CASH_ON_DELIVERY' },
+      ]);
+      mockPrisma.store.findUnique.mockResolvedValue({ id: 'store-1', name: 'ModaBol', address: 'Av. 1', latitude: 1, longitude: 2 });
+      mockPrisma.order.update.mockResolvedValue({});
+
+      const now = new Date('2026-11-02T15:45:00Z');
+      await service.dispatchDueOrders(now);
+
+      expect(mockPrisma.order.findMany.mock.calls[0][0].where.deliveryAt.lte).toEqual(new Date('2026-11-02T16:05:00Z'));
+      expect(mockDspService.dispatchOrder).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.order.update.mock.calls[0][0].data.status).toBe('DSP_DISPATCHED');
     });
   });
 

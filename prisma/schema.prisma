@@ -19,6 +19,8 @@ model User {
   zone             String?
   address          String?
   addressReference String?
+  lat              Float?
+  lng              Float?
   nitOrCi          String?   // Billing Document
   interestProfile  String?   // JSON string of user interest data
   savedCart        String?   // JSON of active cart items
@@ -55,6 +57,12 @@ model Store {
   status         String         @default("ACTIVE") // ACTIVE, SUSPENDED, BANNED
   customCommissionRate Float?
   bankAccountInfo String?        // JSON: bank, account, holder, nit
+  payoutQr       String?        // Image of the QR where the store wants to be paid
+  addressReference String?
+  ownerId        String?        // User who manages the store
+  deliveryDays   String         @default("1,2,3,4,5,6") // Weekdays with deliveries (0 = Sunday)
+  deliveryStart  String         @default("09:00")
+  deliveryEnd    String         @default("18:00")
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -206,10 +214,18 @@ model Order {
   dspEstimatedMinutes Int?        @default(20)
   platformCommission  Float?      @default(0)
   vendorEarnings      Float?      @default(0)
+  storeId             String?     // Each order belongs to one store and one delivery window
+  customerReference   String?
+  deliveryAt          DateTime?   // Start of the delivery window chosen by the customer
+  deliveryWindow      String?     // e.g. "10:00 - 11:00"
+  dispatchedAt        DateTime?
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 
   items               OrderItem[]
+
+  @@index([storeId, createdAt])
+  @@index([status, deliveryAt])
 }
 
 model OrderItem {

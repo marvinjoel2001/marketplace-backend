@@ -11,7 +11,13 @@ import {
   LiveCandidate,
   normalizeUsername,
   RetryGate,
+  REVERIFY_AFTER_SECONDS,
 } from './tiktok-lives.types';
+
+/** Consecutive failed probes that mean TikTok is refusing this IP, not that single accounts fail. */
+const PROBE_FAILURES_BEFORE_PAUSE = 8;
+/** A few lucky probes don't end the limit; only a streak resets the escalating global pause. */
+const PROBE_SUCCESSES_TO_RECOVER = 5;
 
 @Injectable()
 export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestroy {
@@ -21,6 +27,8 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
   private readonly lastCheck = new Map<string, number>();
   private readonly checking = new Set<string>();
   private seedCursor = 0;
+  private probeFailures = 0;
+  private probeSuccesses = 0;
   private stopping = false;
   constructor(
     private readonly prisma: PrismaService,
@@ -54,7 +62,9 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
           (live) => this.classifier.classify(live).isSelling,
         );
         await this.each(selling, owned, (live) =>
-          this.verify(live.username, live, undefined, owned),
+          live.roomId
+            ? this.trustSighting(live, owned)
+            : this.verify(live.username, live, undefined, owned),
         );
         this.logger.log(
           `Exploración TikTok: ${candidates.length} candidatos, ${selling.length} vendedores revisados${this.config.requireRegion ? ' con filtro regional' : ''}`,
@@ -66,6 +76,32 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
         );
       }
     });
+  }
+
+  /** Opens the TikTok sign-in window; once signed in, explores that account's feed right away. */
+  startLogin(): void {
+    void this.discovery
+      .login()
+      .then((signedIn) => {
+        if (!signedIn || !this.config.enabled || this.stopping) return;
+        // A logged-out cycle may have failed on the login wall; don't make the operator wait for its backoff.
+        this.retry.success('discovery');
+        return this.discover();
+      })
+      .catch(() => this.logger.warn('No se pudo abrir el inicio de sesión de TikTok'));
+  }
+
+  /**
+   * A room returned by TikTok's own LIVE feed or search is live at that moment, so it counts as
+   * verified without another HTTP probe. Registered stores still go through verify(), which checks
+   * the store and its account link.
+   */
+  private async trustSighting(live: LiveCandidate, owned: () => boolean): Promise<void> {
+    if (this.stopping || !owned()) return;
+    const account = await this.prisma.tikTokAccount.findUnique({ where: { username: live.username } });
+    if (account) return this.verify(live.username, live, undefined, owned);
+    this.lastCheck.set(live.username, Date.now());
+    await this.lives.saveVerified(live);
   }
 
   /** Rotating sample of live sellers whose rooms seed the next discovery cycle. */
@@ -130,15 +166,22 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
   async refreshActive(): Promise<void> {
     if (!this.config.enabled || this.stopping) return;
     await this.cache.withLease('refresh', async (owned) => {
+      // Rooms seen recently in the feed don't need a probe; the rest are re-probed in small batches.
       const active = await this.prisma.tikTokLive.findMany({
-        where: { status: 'ACTIVE' },
+        where: {
+          status: 'ACTIVE',
+          verifiedAt: { lt: new Date(Date.now() - REVERIFY_AFTER_SECONDS * 1000) },
+        },
         include: { store: true },
         orderBy: { verifiedAt: 'asc' },
       });
       // Failed/slow accounts must not monopolize the front of every batch.
       active.sort((a, b) => (this.lastCheck.get(a.username) ?? 0) - (this.lastCheck.get(b.username) ?? 0));
+      const batch = active
+        .filter((row) => this.accountRetry.ready(row.username))
+        .slice(0, this.config.verifyConcurrency * 2);
       const startBefore = Date.now() + 20000;
-      await this.each(active, () => owned() && Date.now() < startBefore, (row) =>
+      await this.each(batch, () => owned() && Date.now() < startBefore, (row) =>
         this.verify(
           row.username,
           {
@@ -173,7 +216,8 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
       this.stopping ||
       !owned() ||
       this.checking.has(username) ||
-      !this.accountRetry.ready(username)
+      !this.accountRetry.ready(username) ||
+      !this.retry.ready('probes')
     )
       return;
     this.checking.add(username);
@@ -198,6 +242,8 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
               return;
             }
             const result = await this.connector.probe(username, candidate?.roomId);
+            this.probeFailures = 0;
+            if (++this.probeSuccesses >= PROBE_SUCCESSES_TO_RECOVER) this.retry.success('probes');
             if (!stillOwned() || this.stopping) return;
             this.accountRetry.success(username);
             if (!result.live) {
@@ -257,9 +303,19 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
             else await this.connector.unwatch(username);
           } catch {
             const wait = this.accountRetry.fail(username);
-            this.logger.warn(
-              `Verificación TikTok temporalmente indisponible; backoff ${Math.ceil(wait / 1000)}s. La vigencia anterior no se renueva.`,
-            );
+            this.probeSuccesses = 0;
+            if (++this.probeFailures === PROBE_FAILURES_BEFORE_PAUSE) {
+              // Many accounts failing in a row is TikTok limiting this IP: stop probing everyone
+              // for a while instead of hammering it account by account.
+              const pause = this.retry.fail('probes');
+              this.probeFailures = 0;
+              this.logger.warn(
+                `TikTok está rechazando las verificaciones; se pausan ${Math.ceil(pause / 1000)}s. Los lives vistos en el feed siguen contando.`,
+              );
+            } else
+              this.logger.warn(
+                `Verificación TikTok temporalmente indisponible; backoff ${Math.ceil(wait / 1000)}s. La vigencia anterior no se renueva.`,
+              );
           }
         },
       );

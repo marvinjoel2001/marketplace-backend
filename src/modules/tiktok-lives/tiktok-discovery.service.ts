@@ -2,6 +2,8 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { addExtra } from 'puppeteer-extra';
 import StealthPlugin = require('puppeteer-extra-plugin-stealth');
 import type { Browser, Page } from 'puppeteer';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { TikTokLivesConfig } from './tiktok-lives.config';
 import {
   imageUrl,
@@ -17,20 +19,105 @@ const loadPuppeteer = new Function(
   'return import("puppeteer")',
 ) as () => Promise<typeof import('puppeteer')>;
 
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+
+export interface TikTokSessionStatus {
+  logged_in: boolean;
+  checked_at: string | null;
+  login_in_progress: boolean;
+}
+
+/** TikTok's auth cookie exists only while an account is signed in. Its value is never read or logged. */
+export function hasTikTokSession(
+  cookies: { name: string; value: string; domain: string }[],
+): boolean {
+  return cookies.some(
+    (cookie) =>
+      (cookie.name === 'sessionid' || cookie.name === 'sessionid_ss') &&
+      cookie.value.length > 0 &&
+      /(^|\.)tiktok\.com$/.test(cookie.domain.replace(/^\./, '')),
+  );
+}
+
 @Injectable()
 export class TikTokDiscoveryService implements OnModuleDestroy {
   private readonly logger = new Logger(TikTokDiscoveryService.name);
   private browser?: Browser;
   private stopping = false;
   private termCursor = 0;
+  // Chromium locks its profile directory: discovery and the login window take turns on it.
+  private profile: Promise<unknown> = Promise.resolve();
+  private loginTask?: Promise<boolean>;
+  private session = { loggedIn: false, checkedAt: null as string | null };
+  private sessionLoaded?: Promise<void>;
   constructor(
     private readonly config: TikTokLivesConfig,
     private readonly classifier: EcommerceClassifier = new EcommerceClassifier(config),
   ) {}
 
+  /** A pending login interrupts the running discovery, which returns what it already collected. */
+  private get interrupted(): boolean {
+    return this.stopping || !!this.loginTask;
+  }
+
   /** `seeds`: known sellers whose rooms are visited to harvest TikTok's related-LIVE recommendations. */
   async discover(seeds: string[] = []): Promise<LiveCandidate[]> {
-    if (this.stopping) return [];
+    if (this.interrupted) return [];
+    return this.exclusive(() => this.explorePages(seeds));
+  }
+
+  /**
+   * Opens a visible Chromium window on this machine where the operator signs in to TikTok themselves
+   * (password or QR code). The session stays in the persistent profile and later discovery cycles
+   * see that account's personalised LIVE feed and LIVE search. Resolves true once signed in.
+   */
+  login(): Promise<boolean> {
+    this.loginTask ??= this.exclusive(() => this.waitForLogin()).finally(() => {
+      this.loginTask = undefined;
+    });
+    return this.loginTask;
+  }
+
+  async sessionStatus(): Promise<TikTokSessionStatus> {
+    await (this.sessionLoaded ??= this.loadSession());
+    return {
+      logged_in: this.session.loggedIn,
+      checked_at: this.session.checkedAt,
+      login_in_progress: !!this.loginTask,
+    };
+  }
+
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.profile.then(task, task);
+    this.profile = run.catch(() => undefined);
+    return run;
+  }
+
+  private sessionFile(): string {
+    return join(this.config.profileDir, 'vitrina-session.json');
+  }
+
+  private async loadSession(): Promise<void> {
+    try {
+      const saved = JSON.parse(await readFile(this.sessionFile(), 'utf8'));
+      if (typeof saved.loggedIn === 'boolean')
+        this.session = {
+          loggedIn: saved.loggedIn,
+          checkedAt: typeof saved.checkedAt === 'string' ? saved.checkedAt : null,
+        };
+    } catch {
+      /* no session recorded yet */
+    }
+  }
+
+  /** Persists only whether a session exists, never cookie values. */
+  private async recordSession(loggedIn: boolean): Promise<void> {
+    await (this.sessionLoaded ??= this.loadSession());
+    this.session = { loggedIn, checkedAt: new Date().toISOString() };
+    await writeFile(this.sessionFile(), JSON.stringify(this.session)).catch(() => undefined);
+  }
+
+  private async launch(headless: boolean): Promise<Browser> {
     // puppeteer-extra's typings still mention the removed createBrowserFetcher API.
     const puppeteer = await loadPuppeteer();
     const extra = addExtra(
@@ -41,17 +128,84 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
     stealth.enabledEvasions.delete('user-agent-override');
     extra.use(stealth);
     const proxy = this.config.proxy;
-    const browser = await extra.launch({
-      headless: this.config.headless,
+    await mkdir(this.config.profileDir, { recursive: true });
+    return extra.launch({
+      headless,
       executablePath: this.config.browserPath,
+      userDataDir: this.config.profileDir,
+      // A visible login window uses its real size instead of the 800x600 emulation.
+      defaultViewport: headless ? undefined : null,
       args: [
         '--lang=es-BO',
+        ...(headless ? [] : ['--window-size=1100,860']),
         ...(proxy ? [`--proxy-server=${proxy.origin}`] : []),
       ],
       timeout: 30000,
     });
+  }
+
+  private async waitForLogin(): Promise<boolean> {
+    const browser = await this.launch(false);
     this.browser = browser;
     try {
+      const page = (await browser.pages())[0] ?? (await browser.newPage());
+      const proxy = this.config.proxy;
+      if (proxy?.username)
+        await page.authenticate({
+          username: decodeURIComponent(proxy.username),
+          password: decodeURIComponent(proxy.password),
+        });
+      await page
+        .goto('https://www.tiktok.com/login', { waitUntil: 'domcontentloaded', timeout: 30000 })
+        .catch(() => undefined);
+      await this.revealWindow(page);
+      const deadline = Date.now() + LOGIN_TIMEOUT_MS;
+      while (!this.stopping && browser.connected && Date.now() < deadline) {
+        let signedIn = false;
+        try {
+          signedIn = hasTikTokSession(await browser.cookies());
+        } catch {
+          break; // The operator closed the window.
+        }
+        if (signedIn) {
+          // Let TikTok finish its post-login redirects so the profile stores the full session.
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          await this.recordSession(true);
+          this.logger.log('Sesión de TikTok iniciada; el descubrimiento usará el feed de esa cuenta');
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      this.logger.warn('Inicio de sesión de TikTok cancelado o vencido');
+      return false;
+    } finally {
+      await browser.close().catch(() => undefined);
+      if (this.browser === browser) this.browser = undefined;
+    }
+  }
+
+  /**
+   * Puppeteer spawns Chrome with `windowsHide`, so on Windows the login window starts invisible.
+   * Cycling the window state through DevTools shows it and brings it to the front.
+   */
+  private async revealWindow(page: Page): Promise<void> {
+    try {
+      const session = await page.createCDPSession();
+      const { windowId } = await session.send('Browser.getWindowForTarget');
+      await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+      await session.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+      await page.bringToFront();
+      await session.detach();
+    } catch {
+      /* the window may still be usable from the taskbar */
+    }
+  }
+
+  private async explorePages(seeds: string[]): Promise<LiveCandidate[]> {
+    const browser = await this.launch(this.config.headless);
+    this.browser = browser;
+    try {
+      const proxy = this.config.proxy;
       const page = await browser.newPage();
       await page.setExtraHTTPHeaders({
         'Accept-Language': 'es-BO,es;q=0.9,en;q=0.5',
@@ -112,7 +266,7 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
         ]),
       ];
       for (const [target, steps] of targets) {
-        if (this.stopping) break;
+        if (this.interrupted) break;
         responses = 0;
         try {
           if (!(await this.explore(page, target, candidates, steps))) break;
@@ -126,6 +280,11 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
       await Promise.allSettled(pending);
       return this.prioritize([...candidates.values()]);
     } finally {
+      // Notice an expired session so the UI can ask the operator to sign in again.
+      await browser
+        .cookies()
+        .then((cookies) => this.recordSession(hasTikTokSession(cookies)))
+        .catch(() => undefined);
       await browser.close();
       if (this.browser === browser) this.browser = undefined;
     }
@@ -209,7 +368,7 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
       ) as HTMLElement | undefined;
       expand?.click();
     });
-    for (let step = 0; step < steps && !this.stopping; step++) {
+    for (let step = 0; step < steps && !this.interrupted; step++) {
       await this.assertNotBlocked(page);
       for (const payload of await page.$$eval(
         'script#SIGI_STATE, script#__UNIVERSAL_DATA_FOR_REHYDRATION__',

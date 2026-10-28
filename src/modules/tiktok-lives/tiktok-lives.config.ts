@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { resolve } from 'node:path';
 
 @Injectable()
 export class TikTokLivesConfig {
@@ -21,6 +22,14 @@ export class TikTokLivesConfig {
   }
   get headless(): boolean {
     return this.env.get('TIKTOK_HEADLESS') !== 'false';
+  }
+  /** Persistent Chromium profile that keeps the operator's TikTok session between cycles. Never commit it. */
+  get profileDir(): string {
+    return resolve(this.env.get<string>('TIKTOK_PROFILE_DIR', '.tiktok-profile'));
+  }
+  /** Allows opening a visible sign-in window on this machine; only for the operator's own computer. */
+  get interactiveLogin(): boolean {
+    return this.env.get('TIKTOK_INTERACTIVE_LOGIN') === 'true';
   }
   get signApiKey(): string | undefined {
     return this.env.get('TIKTOK_SIGN_API_KEY');
@@ -64,7 +73,7 @@ export class TikTokLivesConfig {
   }
   /** Previously listed sellers re-probed per 3-minute cycle to catch them going live again (0 disables). */
   get recheckPerCycle(): number {
-    return this.integer('TIKTOK_RECHECK_PER_CYCLE', 40, 0, 300);
+    return this.integer('TIKTOK_RECHECK_PER_CYCLE', 15, 0, 300);
   }
   /** Concurrent HTTP verifications; more lives need more to re-verify within the freshness window. */
   get verifyConcurrency(): number {

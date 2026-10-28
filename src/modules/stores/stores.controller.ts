@@ -24,6 +24,17 @@ export class StoresController {
     );
   }
 
+  // Tiendas registradas que están en vivo ahora
+  @Get('live')
+  async getLive() {
+    return this.storesService.findLive();
+  }
+
+  @Get('owner/:userId')
+  async getByOwner(@Param('userId') userId: string) {
+    return this.storesService.findByOwner(userId);
+  }
+
   @Get(':idOrSlug')
   async getOne(@Param('idOrSlug') idOrSlug: string) {
     return this.storesService.findBySlugOrId(idOrSlug);
@@ -32,6 +43,24 @@ export class StoresController {
   @Post()
   async create(@Body() body: any) {
     return this.storesService.create(body);
+  }
+
+  @Patch(':idOrSlug')
+  async update(@Param('idOrSlug') idOrSlug: string, @Body() body: Record<string, unknown>) {
+    return this.storesService.update(idOrSlug, body ?? {});
+  }
+
+  // ==========================================
+  // VENTAS Y MÉTRICAS
+  // ==========================================
+  @Get(':storeId/orders')
+  async getOrders(@Param('storeId') storeId: string, @Query('since') since?: string) {
+    return this.storesService.getOrders(storeId, since);
+  }
+
+  @Get(':storeId/summary')
+  async getSummary(@Param('storeId') storeId: string) {
+    return this.storesService.getSummary(storeId);
   }
 
   // ==========================================
@@ -50,12 +79,31 @@ export class StoresController {
     return this.storesService.createOrUpdateFlashOffer(storeId, body);
   }
 
+  @Post(':storeId/offers/bulk')
+  async applyBulkOffer(@Param('storeId') storeId: string, @Body() body: any) {
+    return this.storesService.applyBulkOffer(storeId, body ?? {});
+  }
+
+  @Post(':storeId/offers/end')
+  async endOffers(@Param('storeId') storeId: string, @Body('offerIds') offerIds: string[]) {
+    return this.storesService.endOffers(storeId, Array.isArray(offerIds) ? offerIds : []);
+  }
+
   @Patch(':storeId/offers/:offerId/toggle')
   async toggleOffer(
     @Param('storeId') storeId: string,
     @Param('offerId') offerId: string,
   ) {
     return this.storesService.toggleOfferPromo(storeId, offerId);
+  }
+
+  @Patch(':storeId/offers/:offerId')
+  async updateOffer(
+    @Param('storeId') storeId: string,
+    @Param('offerId') offerId: string,
+    @Body() body: any,
+  ) {
+    return this.storesService.updateOffer(storeId, offerId, body ?? {});
   }
 
   // ==========================================

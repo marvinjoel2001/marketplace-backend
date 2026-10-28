@@ -27,11 +27,12 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 ENV PORT=4000
 ENV DATABASE_URL="file:/app/prisma/dev.db"
 
+# Reuse the builder's node_modules: the pinned Prisma CLI (db push) and tsx (first-boot seed)
+# are devDependencies, and `npx prisma` would otherwise download an incompatible latest major.
 COPY package*.json ./
 COPY prisma ./prisma/
-RUN npm ci --only=production
-RUN npx prisma generate
-
+COPY scripts ./scripts/
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
 # Chromium runs with its sandbox; do not launch the browser as root.
@@ -40,4 +41,5 @@ USER node
 
 EXPOSE 4000
 
-CMD ["sh", "-c", "npx prisma db push && node dist/main.js"]
+# db push is additive for this schema; the seed only runs when the database has no categories.
+CMD ["sh", "-c", "npx prisma db push && node scripts/seed-if-empty.cjs && node dist/main.js"]

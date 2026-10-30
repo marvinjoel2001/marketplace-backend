@@ -14,7 +14,8 @@ import {
 import { AdminService } from './admin.service';
 import { AdminInsightsService } from './admin-insights.service';
 import { AdminGuard } from './admin.guard';
-import { SettingsService, ShippingRates, WhatsAppSettings } from '../settings/settings.service';
+import { SettingsService, ShippingRates, VISION_MODELS, VisionAiSettings, WhatsAppSettings } from '../settings/settings.service';
+import { PhotoAiService } from '../products/photo-ai.service';
 import { WhatsAppService } from '../auth/whatsapp.service';
 import { OrdersService } from '../orders/orders.service';
 import { normalizeBoliviaPhone } from '../auth/auth.service';
@@ -28,6 +29,7 @@ export class AdminController {
     private readonly settings: SettingsService,
     private readonly whatsapp: WhatsAppService,
     private readonly orders: OrdersService,
+    private readonly photoAi: PhotoAiService,
   ) {}
 
   // ==========================================
@@ -124,6 +126,22 @@ export class AdminController {
     if (!phone) throw new BadRequestException('Escribe un celular boliviano de 8 dígitos');
     const sent = await this.whatsapp.send(phone, 'Mensaje de prueba de Vitrina Market: tu WhatsApp quedó conectado.');
     return { sent: sent.delivered, devOnly: Boolean(sent.devOnly) };
+  }
+
+  // The key never goes back to the browser: only whether one is saved and its last characters.
+  @Get('vision-ai')
+  async getVisionAi() {
+    return visionView(await this.settings.getVisionAi());
+  }
+
+  @Put('vision-ai')
+  async setVisionAi(@Body() body: Partial<VisionAiSettings> & { removeKey?: boolean }) {
+    return visionView(await this.settings.setVisionAi(body ?? {}));
+  }
+
+  @Post('vision-ai/test')
+  async testVisionAi(@Body() body: { apiKey?: string; model?: string }) {
+    return this.photoAi.testKey(body?.apiKey, body?.model);
   }
 
   @Get('stats')
@@ -244,4 +262,15 @@ export class AdminController {
   ) {
     return this.adminService.updatePaymentConfig(key, body);
   }
+}
+
+function visionView(cfg: VisionAiSettings) {
+  return {
+    enabled: cfg.enabled,
+    model: cfg.model,
+    models: VISION_MODELS,
+    hasApiKey: Boolean(cfg.apiKey),
+    keyHint: cfg.apiKey ? `…${cfg.apiKey.slice(-4)}` : '',
+    fromEnv: Boolean(process.env.ANTHROPIC_API_KEY) && cfg.apiKey === process.env.ANTHROPIC_API_KEY,
+  };
 }

@@ -1,3 +1,4 @@
+import { PhotoAiService } from '../photo-ai.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProductsController } from '../products.controller';
 import { ProductsService } from '../products.service';
@@ -43,6 +44,7 @@ describe('ProductsController', () => {
           provide: ProductsService,
           useValue: mockProductsService,
         },
+        { provide: PhotoAiService, useValue: {} },
       ],
     }).compile();
 

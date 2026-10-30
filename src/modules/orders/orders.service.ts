@@ -3,6 +3,7 @@ import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DspService } from '../dsp/dsp.service';
 import { effectivePrice } from '../products/pricing';
+import { parseVariants } from '../products/variants';
 import { isBookableWindow, windowLabel } from '../stores/delivery-schedule';
 
 /** The driver is requested this long before the window starts, so they reach the store on time. */
@@ -21,7 +22,7 @@ export interface CreateOrderDto {
   customerLng?: number | string;
   paymentMethod?: string;
   deliveryAt?: string;
-  items: { productOfferId?: string; quantity?: number | string }[];
+  items: { productOfferId?: string; quantity?: number | string; variant?: string }[];
 }
 
 @Injectable()
@@ -88,28 +89,49 @@ export class OrdersService {
       ? (data.paymentMethod as string)
       : 'CASH_ON_DELIVERY';
 
-    const quantities = new Map<string, number>();
+    // One cart line per product and option (size, voltage, ...).
+    const wanted = new Map<string, { offerId: string; variant: string; quantity: number }>();
     for (const item of items) {
       const id = String(item.productOfferId ?? '');
       const qty = Number(item.quantity ?? 1);
+      const variant = String(item.variant ?? '').trim();
       if (!id || !Number.isInteger(qty) || qty < 1 || qty > 99)
         throw new BadRequestException('Revisa las cantidades del carrito');
-      quantities.set(id, (quantities.get(id) ?? 0) + qty);
+      const key = `${id}::${variant.toLocaleLowerCase('es')}`;
+      const line = wanted.get(key) ?? { offerId: id, variant, quantity: 0 };
+      line.quantity += qty;
+      wanted.set(key, line);
     }
+    const offerIds = [...new Set([...wanted.values()].map((w) => w.offerId))];
 
     const offers = await this.prisma.productOffer.findMany({
-      where: { id: { in: [...quantities.keys()] } },
+      where: { id: { in: offerIds } },
       include: { product: true, store: true },
     });
-    if (offers.length !== quantities.size || offers.some((o) => !o.isActive || o.store.status !== 'ACTIVE'))
+    if (offers.length !== offerIds.length || offers.some((o) => !o.isActive || o.store.status !== 'ACTIVE'))
       throw new BadRequestException('Algún producto del carrito ya no está disponible');
 
     const store = offers[0].store;
     if (offers.some((o) => o.storeId !== store.id))
       throw new BadRequestException('Cada pedido debe ser de una sola tienda');
-    for (const offer of offers) {
-      if ((quantities.get(offer.id) ?? 0) > offer.stock)
-        throw new BadRequestException(`Solo quedan ${offer.stock} de "${offer.product.title}"`);
+
+    const byId = new Map(offers.map((o) => [o.id, { offer: o, variants: parseVariants(o.variants), taken: 0 }]));
+    for (const w of wanted.values()) {
+      const entry = byId.get(w.offerId)!;
+      const title = entry.offer.product.title;
+      if (entry.variants.length) {
+        const option = entry.variants.find((v) => v.label.toLocaleLowerCase('es') === w.variant.toLocaleLowerCase('es'));
+        if (!option) throw new BadRequestException(`Elige ${(entry.offer.variantAxis || 'una opción').toLowerCase()} para "${title}"`);
+        if (w.quantity > option.stock)
+          throw new BadRequestException(`Solo quedan ${option.stock} de "${title}" (${option.label})`);
+        option.stock -= w.quantity;
+        w.variant = option.label;
+      } else {
+        w.variant = '';
+      }
+      entry.taken += w.quantity;
+      if (entry.taken > entry.offer.stock)
+        throw new BadRequestException(`Solo quedan ${entry.offer.stock} de "${title}"`);
     }
 
     if (!store.paymentMethods.split(',').includes(paymentMethod))
@@ -119,8 +141,9 @@ export class OrdersService {
     if (!isBookableWindow(store, deliveryAt))
       throw new BadRequestException('Elige un horario de entrega disponible para esta tienda');
 
-    const lines = offers.map((offer) => {
-      const quantity = quantities.get(offer.id) ?? 1;
+    const lines = [...wanted.values()].map((w) => {
+      const offer = byId.get(w.offerId)!.offer;
+      const quantity = w.quantity;
       const unitPrice = effectivePrice(offer);
       let image = '';
       try {
@@ -128,7 +151,7 @@ export class OrdersService {
       } catch {
         image = offer.product.images || '';
       }
-      return { offer, quantity, unitPrice, subtotal: Math.round(unitPrice * quantity * 100) / 100, image };
+      return { offer, variant: w.variant || null, quantity, unitPrice, subtotal: Math.round(unitPrice * quantity * 100) / 100, image };
     });
 
     const subtotal = Math.round(lines.reduce((sum, l) => sum + l.subtotal, 0) * 100) / 100;
@@ -179,6 +202,7 @@ export class OrdersService {
               productOfferId: l.offer.id,
               storeId: store.id,
               productTitle: l.offer.product.title,
+              variant: l.variant,
               storeName: store.name,
               quantity: l.quantity,
               unitPrice: l.unitPrice,
@@ -189,10 +213,13 @@ export class OrdersService {
         },
         include: { items: true },
       }),
-      ...lines.map((l) =>
+      ...[...byId.values()].map((e) =>
         this.prisma.productOffer.update({
-          where: { id: l.offer.id },
-          data: { stock: { decrement: l.quantity } },
+          where: { id: e.offer.id },
+          data: {
+            stock: { decrement: e.taken },
+            ...(e.variants.length && { variants: JSON.stringify(e.variants) }),
+          },
         }),
       ),
     ]);

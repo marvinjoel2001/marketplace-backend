@@ -7,9 +7,10 @@ import { AdminAuthService } from './admin-auth.service';
 import { AdminGuard } from './admin.guard';
 import { AuthModule } from '../auth/auth.module';
 import { OrdersModule } from '../orders/orders.module';
+import { ProductsModule } from '../products/products.module';
 
 @Module({
-  imports: [AuthModule, OrdersModule],
+  imports: [AuthModule, OrdersModule, ProductsModule],
   controllers: [AdminController, AdminAuthController],
   providers: [AdminService, AdminInsightsService, AdminAuthService, AdminGuard],
   exports: [AdminService, AdminAuthService],

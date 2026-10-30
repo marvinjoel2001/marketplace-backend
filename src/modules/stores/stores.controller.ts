@@ -89,6 +89,20 @@ export class StoresController {
     return this.storesService.endOffers(storeId, Array.isArray(offerIds) ? offerIds : []);
   }
 
+  @Post(':storeId/offers/confirm')
+  async confirmStock(@Param('storeId') storeId: string, @Body() body: { offerIds?: string[]; stillHave?: boolean }) {
+    return this.storesService.confirmStock(storeId, body?.offerIds ?? [], body?.stillHave !== false);
+  }
+
+  @Post(':storeId/offers/:offerId/stock')
+  async adjustStock(
+    @Param('storeId') storeId: string,
+    @Param('offerId') offerId: string,
+    @Body() body: { change?: number; variant?: string },
+  ) {
+    return this.storesService.adjustStock(storeId, offerId, body ?? {});
+  }
+
   @Patch(':storeId/offers/:offerId/toggle')
   async toggleOffer(
     @Param('storeId') storeId: string,

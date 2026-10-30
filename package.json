@@ -4,7 +4,9 @@
   "description": "CompraYa Marketplace Backend - NestJS REST API with Prisma ORM and OpenDSP Integration",
   "private": true,
   "license": "UNLICENSED",
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "build": "nest build",
     "start": "nest start",
@@ -22,6 +24,7 @@
     "tiktok:sync": "node scripts/tiktok-sync.cjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
     "@nestjs/common": "^10.4.15",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^10.4.15",
@@ -41,7 +44,8 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "tiktok-live-connector": "^2.5.0"
+    "tiktok-live-connector": "^2.5.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.9",

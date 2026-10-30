@@ -1,9 +1,24 @@
 import { Controller, Get, Post, Put, Patch, Delete, Param, Query, Body } from '@nestjs/common';
 import { ProductsService } from './products.service';
+import { PhotoAiService } from './photo-ai.service';
 
 @Controller('products')
 export class ProductsController {
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(
+    private readonly productsService: ProductsService,
+    private readonly photoAi: PhotoAiService,
+  ) {}
+
+  /** Whether sellers get their product form filled from the photo. */
+  @Get('photo-ai/status')
+  async photoAiStatus() {
+    return this.photoAi.status();
+  }
+
+  @Post('photo-ai/analyze')
+  async analyzePhoto(@Body() body: { storeId?: string; image?: string }) {
+    return this.photoAi.analyze(body ?? {});
+  }
 
   @Get()
   async getAll(

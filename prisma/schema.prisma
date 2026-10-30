@@ -143,6 +143,10 @@ model Product {
   isFlashSale     Boolean        @default(false)
   flashSaleEnd    DateTime?
   status          String         @default("ACTIVE") // ACTIVE, REMOVED_BY_ADMIN, DRAFT
+  condition       String         @default("NUEVO") // NUEVO, SEMINUEVO, USADO
+  audience        String?        // Mujer, Hombre, Unisex, Niños, Bebés, Todos
+  /// Too big or heavy for a delivery motorbike.
+  bulky           Boolean        @default(false)
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -168,6 +172,12 @@ model ProductOffer {
   promoBadge        String?     // OFERTA_FLASH, LIQUIDACION, COMBO, DOS_POR_UNO
   promoStock        Int?
   promoSalesCount   Int         @default(0)
+  /// What the options are called (Talla, Número, Edad, Medida, Color, Capacidad). Null: no options.
+  variantAxis       String?
+  /// JSON array of { label, stock }. When set, `stock` is their sum.
+  variants          String?
+  /// Last time the seller confirmed this product is still on hand.
+  stockCheckedAt    DateTime    @default(now())
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -242,6 +252,8 @@ model OrderItem {
   storeId        String
   store          Store         @relation(fields: [storeId], references: [id])
   productTitle   String
+  /// Chosen option (size, number, ...) when the product has options.
+  variant        String?
   storeName      String
   quantity       Int           @default(1)
   unitPrice      Float

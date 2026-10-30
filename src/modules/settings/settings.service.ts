@@ -20,7 +20,17 @@ export interface WhatsAppSettings {
   session: string;
 }
 
-const KEYS = { shipping: 'shipping', whatsapp: 'whatsapp', secret: 'token_secret', notificationsSeen: 'admin_notifications_seen_at' } as const;
+/** Models the admin can pick for reading product photos; the first is the default. */
+export const VISION_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'] as const;
+export type VisionModel = (typeof VISION_MODELS)[number];
+
+export interface VisionAiSettings {
+  enabled: boolean;
+  apiKey: string;
+  model: VisionModel;
+}
+
+const KEYS = { shipping: 'shipping', whatsapp: 'whatsapp', visionAi: 'vision_ai', secret: 'token_secret', notificationsSeen: 'admin_notifications_seen_at' } as const;
 
 /** Platform-wide settings kept in the AppSetting table, with env fallbacks where an operator would set them at deploy time. */
 @Injectable()
@@ -82,6 +92,28 @@ export class SettingsService {
     };
     await this.set(KEYS.whatsapp, next);
     return next;
+  }
+
+  /** Anthropic key and model that recognise product photos. ANTHROPIC_API_KEY is used until a key is saved from /admin. */
+  async getVisionAi(): Promise<VisionAiSettings> {
+    const saved = (await this.get<Partial<VisionAiSettings>>(KEYS.visionAi)) ?? {};
+    return {
+      enabled: saved.enabled ?? true,
+      apiKey: saved.apiKey || process.env.ANTHROPIC_API_KEY || '',
+      model: VISION_MODELS.includes(saved.model as VisionModel) ? (saved.model as VisionModel) : VISION_MODELS[0],
+    };
+  }
+
+  async setVisionAi(input: Partial<VisionAiSettings> & { removeKey?: boolean }): Promise<VisionAiSettings> {
+    const saved = (await this.get<Partial<VisionAiSettings>>(KEYS.visionAi)) ?? {};
+    const next: Partial<VisionAiSettings> = {
+      enabled: input.enabled === undefined ? saved.enabled ?? true : Boolean(input.enabled),
+      // An empty key from the form means "keep the one already saved".
+      apiKey: input.removeKey ? '' : input.apiKey?.trim() || saved.apiKey || '',
+      model: VISION_MODELS.includes(input.model as VisionModel) ? input.model : saved.model ?? VISION_MODELS[0],
+    };
+    await this.set(KEYS.visionAi, next);
+    return this.getVisionAi();
   }
 
   /** Secret that signs admin tokens and hashes login codes. ADMIN_TOKEN_SECRET wins; otherwise one is generated once and persisted. */

@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { PrismaService } from '../../prisma/prisma.service';
 import { LIVE_TTL_SECONDS } from '../tiktok-lives/tiktok-lives.types';
 import { normalizeSchedule } from './delivery-schedule';
+import { normalizeAxis, normalizeVariants, parseVariants, totalStock } from '../products/variants';
 
 @Injectable()
 export class StoresService {
@@ -390,12 +391,18 @@ export class StoresService {
   async updateOffer(
     idOrSlug: string,
     offerId: string,
-    data: { price?: number | string; stock?: number | string; isActive?: boolean },
+    data: { price?: number | string; stock?: number | string; isActive?: boolean; variantAxis?: string; variants?: unknown },
   ) {
     const store = await this.resolve(idOrSlug);
     const offer = await this.prisma.productOffer.findFirst({ where: { id: offerId, storeId: store.id } });
     if (!offer) throw new NotFoundException('Producto no encontrado en esta tienda');
-    const update: Record<string, unknown> = {};
+    const update: Record<string, unknown> = { stockCheckedAt: new Date() };
+    if (data.variants !== undefined) {
+      const variants = normalizeVariants(data.variants);
+      update.variants = variants ? JSON.stringify(variants) : null;
+      update.variantAxis = variants ? normalizeAxis(data.variantAxis) ?? offer.variantAxis ?? 'Opción' : null;
+      if (variants) update.stock = totalStock(variants);
+    }
     if (data.price !== undefined) {
       const price = Number(data.price);
       if (!Number.isFinite(price) || price <= 0) throw new BadRequestException('El precio debe ser mayor a 0');
@@ -403,7 +410,9 @@ export class StoresService {
       if (offer.discountPercent && offer.isFlashSale)
         update.salePrice = Math.round(price * (100 - offer.discountPercent)) / 100;
     }
-    if (data.stock !== undefined) {
+    // With options the total always comes from them.
+    const hasVariants = data.variants !== undefined ? Boolean(update.variants) : parseVariants(offer.variants).length > 0;
+    if (data.stock !== undefined && !hasVariants) {
       const stock = Number(data.stock);
       if (!Number.isInteger(stock) || stock < 0) throw new BadRequestException('El stock no puede ser negativo');
       update.stock = stock;
@@ -414,6 +423,67 @@ export class StoresService {
       data: update,
       include: { product: { include: { category: true } } },
     });
+  }
+
+  /**
+   * "Vendí una" (negative change) and "Llegaron más" (positive) for rotating stock, optionally for
+   * one option. A product that runs out is hidden from the shop and shows again when stock comes back.
+   */
+  async adjustStock(idOrSlug: string, offerId: string, data: { change?: number | string; variant?: string }) {
+    const store = await this.resolve(idOrSlug);
+    const offer = await this.prisma.productOffer.findFirst({ where: { id: offerId, storeId: store.id } });
+    if (!offer) throw new NotFoundException('Producto no encontrado en esta tienda');
+    const change = Number(data.change);
+    if (!Number.isInteger(change) || change === 0 || Math.abs(change) > 999)
+      throw new BadRequestException('Escribe una cantidad válida');
+
+    const variants = parseVariants(offer.variants);
+    let stock: number;
+    if (variants.length) {
+      const label = String(data.variant ?? '').trim();
+      const target = variants.find((v) => v.label.toLocaleLowerCase('es') === label.toLocaleLowerCase('es'));
+      if (!target) throw new BadRequestException(`Elige ${(offer.variantAxis || 'la opción').toLowerCase()}`);
+      if (target.stock + change < 0) throw new BadRequestException(`Ya no te quedan de ${target.label}`);
+      target.stock += change;
+      stock = totalStock(variants);
+    } else {
+      if (offer.stock + change < 0) throw new BadRequestException('Ya no te quedan unidades de este producto');
+      stock = offer.stock + change;
+    }
+    return this.prisma.productOffer.update({
+      where: { id: offer.id },
+      data: {
+        stock,
+        ...(variants.length && { variants: JSON.stringify(variants) }),
+        isActive: stock > 0 ? (change > 0 ? true : offer.isActive) : false,
+        stockCheckedAt: new Date(),
+      },
+      include: { product: { include: { category: true } } },
+    });
+  }
+
+  /** Answers "¿Sigues teniendo estos?": keep them as they are, or mark them sold out and hide them. */
+  async confirmStock(idOrSlug: string, offerIds: string[], stillHave: boolean) {
+    const store = await this.resolve(idOrSlug);
+    const ids = Array.isArray(offerIds) ? offerIds.map(String).slice(0, 200) : [];
+    if (!ids.length) throw new BadRequestException('Elige al menos un producto');
+    const offers = await this.prisma.productOffer.findMany({ where: { id: { in: ids }, storeId: store.id } });
+    await this.prisma.$transaction(
+      offers.map((offer) =>
+        this.prisma.productOffer.update({
+          where: { id: offer.id },
+          data: stillHave
+            ? { stockCheckedAt: new Date() }
+            : {
+                stockCheckedAt: new Date(),
+                stock: 0,
+                isActive: false,
+                ...(offer.variants && { variants: JSON.stringify(parseVariants(offer.variants).map((v) => ({ ...v, stock: 0 }))) }),
+              },
+        }),
+      ),
+    );
+    return { updated: offers.length };
   }
 
   // ====================================================

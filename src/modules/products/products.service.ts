@@ -1,5 +1,19 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AUDIENCES, CONDITIONS, normalizeAxis, normalizeVariants, totalStock } from './variants';
+
+function slugify(text: string) {
+  return text.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'producto';
+}
+
+function pickCondition(value: unknown): string | null {
+  const v = String(value ?? '').toUpperCase();
+  return (CONDITIONS as readonly string[]).includes(v) ? v : null;
+}
+
+function pickAudience(value: unknown): string | null {
+  return (AUDIENCES as readonly string[]).find((a) => a.toLowerCase() === String(value ?? '').toLowerCase()) ?? null;
+}
 
 @Injectable()
 export class ProductsService {
@@ -104,6 +118,11 @@ export class ProductsService {
     warranty?: string;
     hasInvoice?: boolean;
     stock?: number | string;
+    condition?: string;
+    audience?: string;
+    bulky?: boolean;
+    variantAxis?: string;
+    variants?: unknown;
   }) {
     const {
       title,
@@ -166,7 +185,11 @@ export class ProductsService {
       });
     }
 
-    const slug = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
+    const slug = `${slugify(title)}-${Date.now().toString(36).slice(-5)}`;
+    const variants = normalizeVariants(data.variants);
+    const axis = variants ? normalizeAxis(data.variantAxis) ?? 'Opción' : null;
+    // 0 is a real answer ("sold out"); only a missing or invalid value falls back to 1.
+    const plainStock = Number.isInteger(Number(stock)) && Number(stock) >= 0 ? Number(stock) : 1;
 
     return this.prisma.product.create({
       data: {
@@ -186,12 +209,16 @@ export class ProductsService {
         material: material || '',
         warranty: warranty || null,
         hasInvoice: Boolean(hasInvoice),
+        condition: pickCondition(data.condition) ?? 'NUEVO',
+        audience: pickAudience(data.audience),
+        bulky: Boolean(data.bulky),
         offers: {
           create: {
             storeId: targetStore.id,
             price: numericPrice,
-            // 0 is a real answer ("sold out"); only a missing or invalid value falls back to 10.
-            stock: Number.isInteger(Number(stock)) && Number(stock) >= 0 ? Number(stock) : 10,
+            stock: variants ? totalStock(variants) : plainStock,
+            variantAxis: axis,
+            variants: variants ? JSON.stringify(variants) : null,
             shippingCost: 0,
             estimatedDelivery: '',
             isRecommended: true,
@@ -245,6 +272,9 @@ export class ProductsService {
     if (data.hasInvoice !== undefined) updateData.hasInvoice = Boolean(data.hasInvoice);
     if (data.discountPercent !== undefined) updateData.discountPercent = Number(data.discountPercent);
     if (data.isFlashSale !== undefined) updateData.isFlashSale = Boolean(data.isFlashSale);
+    if (data.condition !== undefined) updateData.condition = pickCondition(data.condition) ?? existing.condition;
+    if (data.audience !== undefined) updateData.audience = pickAudience(data.audience);
+    if (data.bulky !== undefined) updateData.bulky = Boolean(data.bulky);
 
     // Si también se pasa stock y/o precio de oferta para una tienda específica
     if (data.storeId && (data.stock !== undefined || data.price !== undefined)) {

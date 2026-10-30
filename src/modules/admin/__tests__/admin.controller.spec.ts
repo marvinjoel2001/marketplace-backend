@@ -1,3 +1,4 @@
+import { PhotoAiService } from '../../products/photo-ai.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AdminController } from '../admin.controller';
 import { AdminService } from '../admin.service';
@@ -35,6 +36,7 @@ describe('AdminController', () => {
         { provide: SettingsService, useValue: {} },
         { provide: WhatsAppService, useValue: {} },
         { provide: OrdersService, useValue: {} },
+        { provide: PhotoAiService, useValue: {} },
       ],
     })
       .overrideGuard(AdminGuard)

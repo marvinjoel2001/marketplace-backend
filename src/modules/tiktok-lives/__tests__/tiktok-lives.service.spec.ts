@@ -208,7 +208,8 @@ describe('TikTokLivesService/API', () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
   it('protege el registro de cuentas sin exponer la clave administrativa', () => {
-    const controller = new TikTokLivesController(service, config);
+    const feeds = { snapshot: jest.fn() } as any;
+    const controller = new TikTokLivesController(service, config, feeds);
     expect(() => controller.register('s1', 'tienda', 'wrong')).toThrow(
       'Credencial administrativa inválida',
     );
@@ -216,7 +217,7 @@ describe('TikTokLivesService/API', () => {
       new TikTokLivesController(service, {
         ...config,
         adminKey: '',
-      } as any).register('s1', 'tienda'),
+      } as any, feeds).register('s1', 'tienda'),
     ).toThrow('Configura TIKTOK_ADMIN_KEY');
   });
 });

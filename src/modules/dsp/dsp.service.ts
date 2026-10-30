@@ -1,4 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
+import { distanceKm, effectiveRates, shippingPrice } from './shipping';
 
 export interface DSPQuoteRequest {
   pickupLat: number;
@@ -7,6 +10,8 @@ export interface DSPQuoteRequest {
   dropoffLng: number;
   itemsCount?: number;
   declaredValue?: number;
+  /** Pricing store: its own driver rates override the platform defaults. */
+  storeId?: string;
 }
 
 export interface DSPQuoteResponse {
@@ -54,7 +59,42 @@ export class DspService {
   private readonly dspApiUrl = process.env.DSP_API_URL || 'http://localhost:3000/v1';
   private readonly dspApiKey = process.env.DSP_API_KEY || 'dsp_live_marketplace_bolivia_2026';
 
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: SettingsService,
+  ) {}
+
+  /**
+   * Shipping price for a delivery. The platform tariff (base fare + rate per km, configurable globally and per store
+   * from /admin) is authoritative. OpenDSP Core is only asked for a quote when DSP_QUOTE_SOURCE=core.
+   */
   async getQuote(params: DSPQuoteRequest): Promise<DSPQuoteResponse> {
+    const store = params.storeId
+      ? await this.prisma.store.findUnique({
+          where: { id: params.storeId },
+          select: { shippingBaseFare: true, shippingPerKm: true },
+        })
+      : null;
+    const rates = effectiveRates(await this.settings.getShipping(), store);
+    const km = distanceKm(
+      { lat: params.pickupLat, lng: params.pickupLng },
+      { lat: params.dropoffLat, lng: params.dropoffLng },
+    );
+    const local = shippingPrice(km, rates);
+
+    if (process.env.DSP_QUOTE_SOURCE === 'core') {
+      const remote = await this.coreQuote(params);
+      if (remote) return remote;
+    }
+
+    return {
+      quoteId: `dsp_q_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      ...local,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    };
+  }
+
+  private async coreQuote(params: DSPQuoteRequest): Promise<DSPQuoteResponse | null> {
     try {
       const response = await fetch(`${this.dspApiUrl}/quotes`, {
         method: 'POST',
@@ -73,49 +113,22 @@ export class DspService {
         }),
         signal: AbortSignal.timeout(2500),
       });
-
-      if (response.ok) {
-        const data = await response.json();
-        return {
-          quoteId: data.id || data.quoteId,
-          price: data.totalPrice ?? data.price ?? 15,
-          distanceKm: data.distanceKm ?? 3.4,
-          estimatedMinutes: data.durationMinutes ?? 20,
-          expiresAt: data.expiresAt ?? new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-        };
-      } else {
-        const errText = await response.text();
-        this.logger.warn(`OpenDSP Quote HTTP ${response.status}: ${errText}`);
+      if (!response.ok) {
+        this.logger.warn(`OpenDSP Quote HTTP ${response.status}: ${await response.text()}`);
+        return null;
       }
+      const data = await response.json();
+      return {
+        quoteId: data.id || data.quoteId,
+        price: data.totalPrice ?? data.price ?? 15,
+        distanceKm: data.distanceKm ?? 3.4,
+        estimatedMinutes: data.durationMinutes ?? 20,
+        expiresAt: data.expiresAt ?? new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      };
     } catch (err: any) {
-      this.logger.debug(`OpenDSP Core no disponible (${err.message}). Usando cálculo Haversine de contingencia.`);
+      this.logger.debug(`OpenDSP Core no disponible (${err.message}). Se usa la tarifa de la plataforma.`);
+      return null;
     }
-
-    // Fallback Haversine tarificación oficial OpenDSP (Base Bs 8 + Bs 2.5/km)
-    const R = 6371; // km
-    const dLat = ((params.dropoffLat - params.pickupLat) * Math.PI) / 180;
-    const dLng = ((params.dropoffLng - params.pickupLng) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((params.pickupLat * Math.PI) / 180) *
-        Math.cos((params.dropoffLat * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const distKm = Math.max(1.2, Math.round(R * c * 10) / 10);
-
-    const baseFare = 8.0;
-    const perKm = 2.5;
-    const price = Math.round(baseFare + distKm * perKm);
-    const estimatedMinutes = Math.min(45, Math.max(15, Math.round(distKm * 4 + 8)));
-
-    return {
-      quoteId: `dsp_q_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      price,
-      distanceKm: distKm,
-      estimatedMinutes,
-      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-    };
   }
 
   async dispatchOrder(params: DSPOrderRequest): Promise<DSPOrderResponse> {

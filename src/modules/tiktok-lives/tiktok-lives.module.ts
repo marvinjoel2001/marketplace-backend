@@ -9,6 +9,7 @@ import { TikTokLivesService } from './tiktok-lives.service';
 import { TikTokLivesWorker } from './tiktok-lives.worker';
 import { TikTokLivesController } from './tiktok-lives.controller';
 import { TikTokSessionController } from './tiktok-session.controller';
+import { LiveFeedService } from './live-feed.service';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
@@ -21,6 +22,7 @@ import { TikTokSessionController } from './tiktok-session.controller';
     TikTokLiveCache,
     TikTokLivesService,
     TikTokLivesWorker,
+    LiveFeedService,
   ],
   exports: [TikTokLivesService],
 })

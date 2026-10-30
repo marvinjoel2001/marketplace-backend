@@ -84,6 +84,18 @@ export class StoresService {
       if (existing) return existing;
     }
 
+    if (data.phone) {
+      const cleanPhone = String(data.phone).trim();
+      if (cleanPhone) {
+        const phoneStore = await this.prisma.store.findFirst({
+          where: { phone: cleanPhone, status: { not: 'BANNED' } },
+        });
+        if (phoneStore && (!ownerId || phoneStore.ownerId !== ownerId)) {
+          throw new BadRequestException('Ya existe una tienda registrada con este número de teléfono');
+        }
+      }
+    }
+
     const slug = `${name.toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${Date.now().toString().slice(-4)}`;
     const settings = this.settingsData(data);
 
@@ -120,6 +132,15 @@ export class StoresService {
   /** Settings the store edits from its panel. Other columns (status, wallet, ownership) stay out of reach. */
   async update(idOrSlug: string, data: Record<string, unknown>) {
     const store = await this.resolve(idOrSlug);
+    if (data.phone) {
+      const cleanPhone = String(data.phone).trim();
+      if (cleanPhone) {
+        const phoneStore = await this.prisma.store.findFirst({
+          where: { phone: cleanPhone, id: { not: store.id }, status: { not: 'BANNED' } },
+        });
+        if (phoneStore) throw new BadRequestException('Ya existe otra tienda registrada con este número de teléfono');
+      }
+    }
     return this.prisma.store.update({
       where: { id: store.id },
       data: this.settingsData(data),
@@ -270,24 +291,24 @@ export class StoresService {
         status: { not: 'CANCELLED' },
         createdAt: { gte: new Date(Math.min(startOfWeek.getTime(), startOfMonth.getTime())) },
       },
-      select: { subtotal: true, createdAt: true },
+      select: { createdAt: true, items: { where: { storeId: store.id }, select: { subtotal: true } } },
     });
     const sum = (from: Date) => {
       const list = orders.filter((o) => o.createdAt >= from);
-      return { total: Math.round(list.reduce((s, o) => s + o.subtotal, 0) * 100) / 100, count: list.length };
+      return { total: Math.round(list.reduce((s, o) => s + o.items.reduce((amount, item) => amount + item.subtotal, 0), 0) * 100) / 100, count: list.length };
     };
 
     const [upcoming, products, activeOffers] = await Promise.all([
       this.prisma.order.findMany({
         where: {
           OR: [{ storeId: store.id }, { items: { some: { storeId: store.id } } }],
-          status: { in: ['SCHEDULED', 'CONFIRMED', 'DSP_DISPATCHED'] },
+          status: { in: ['SCHEDULED', 'CONFIRMED', 'PREPARING', 'DSP_DISPATCHED'] },
         },
         include: { items: true },
         orderBy: { deliveryAt: 'asc' },
         take: 5,
       }),
-      this.prisma.productOffer.count({ where: { storeId: store.id, isActive: true } }),
+      this.prisma.productOffer.count({ where: { storeId: store.id } }),
       this.prisma.productOffer.count({
         where: { storeId: store.id, isActive: true, isFlashSale: true, flashSaleEnd: { gt: now } },
       }),

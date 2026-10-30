@@ -17,6 +17,7 @@ import { EcommerceClassifier } from '../ecommerce-classifier.service';
 import { TikTokLiveCache } from '../tiktok-live-cache.service';
 import { TikTokLivesConfig } from '../tiktok-lives.config';
 import { TikTokLivesController } from '../tiktok-lives.controller';
+import { LiveFeedService } from '../live-feed.service';
 import { TikTokLivesService } from '../tiktok-lives.service';
 
 describe('TikTok LIVE API + SQLite integration (isolated database)', () => {
@@ -67,6 +68,7 @@ describe('TikTok LIVE API + SQLite integration (isolated database)', () => {
         TikTokLiveCache,
         { provide: PrismaService, useValue: db },
         { provide: TikTokLivesConfig, useValue: config },
+        { provide: LiveFeedService, useValue: { snapshot: jest.fn() } },
       ],
     }).compile();
     app = module.createNestApplication();

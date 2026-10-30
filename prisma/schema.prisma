@@ -26,6 +26,7 @@ model User {
   savedCart        String?   // JSON of active cart items
   role             String    @default("CUSTOMER") // CUSTOMER, VENDOR, ADMIN
   status           String    @default("ACTIVE")   // ACTIVE, BANNED, SUSPENDED
+  phoneVerifiedAt  DateTime? // Set when the owner proved control of `phone` with a WhatsApp code
   storeId          String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -63,6 +64,10 @@ model Store {
   deliveryDays   String         @default("1,2,3,4,5,6") // Weekdays with deliveries (0 = Sunday)
   deliveryStart  String         @default("09:00")
   deliveryEnd    String         @default("18:00")
+  paymentMethods String         @default("CASH_ON_DELIVERY,QR_ON_DELIVERY") // Checkout methods the admin enabled for this store
+  shippingBaseFare Float?       // Driver fare per delivery for this store; null = platform default
+  shippingPerKm  Float?         // Driver fare per km for this store; null = platform default
+  statusReason   String?        // Why the admin suspended or blocked the store
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
@@ -308,3 +313,48 @@ model Coupon {
   createdAt       DateTime  @default(now())
 }
 
+
+/// Staff login for the /admin panel. Seeded as admin/admin and forced to change the password on first use.
+model AdminAccount {
+  id                 String   @id @default(cuid())
+  username           String   @unique
+  passwordHash       String   // scrypt: salt:hash (hex)
+  mustChangePassword Boolean  @default(true)
+  lastLoginAt        DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+/// One-time WhatsApp login codes. Only a keyed hash of the code is stored.
+model OtpCode {
+  id         String    @id @default(cuid())
+  phone      String    // normalized "+591 7XXXXXXX"
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([phone, createdAt])
+}
+
+/// Small key/value store for platform settings (tariffs, token secret, WhatsApp gateway, ...).
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+/// Money the platform paid out to a store or to the delivery driver pool.
+model Payout {
+  id        String   @id @default(cuid())
+  kind      String   // STORE, DRIVER
+  storeId   String?  // The store the money is for (STORE) or whose deliveries it covers (DRIVER)
+  amount    Float
+  method    String?  // e.g. QR, TRANSFER, CASH
+  reference String?
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([storeId, kind])
+}

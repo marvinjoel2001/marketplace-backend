@@ -10,6 +10,20 @@ import { TikTokLivesService } from './tiktok-lives.service';
 import { LiveCandidate, normalizeUsername, RetryGate } from './tiktok-lives.types';
 import { parseRooms } from './tiktok-payload.parser';
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/** Raw webcast messages; LiveFeedService picks the fields it shows. */
+export interface FeedHandlers {
+  chat(message: any): void;
+  like(message: any): void;
+  viewers(message: any): void;
+  share(): void;
+  pin(message: any): void;
+  product(message: any): void;
+  ended(): void;
+  disconnected(): void;
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 // Preserve native ESM import when compiling this NestJS project to CommonJS (Node >=20).
 const loadConnector = new Function(
   'return import("tiktok-live-connector")',
@@ -216,6 +230,41 @@ export class TikTokConnectorService implements OnModuleDestroy {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /**
+   * Opens a socket only to follow a room for people watching it in Vitrina (comments, likes,
+   * pinned messages, TikTok Shop products). Resolves with a function that closes it.
+   */
+  async openFeed(username: string, roomId: string, on: FeedHandlers): Promise<() => Promise<void>> {
+    const sdk = await this.library();
+    const connection = await this.create(username);
+    connection.on(sdk.ControlEvent.ERROR, () => {
+      /* connect() rejects; don't log proxy/session secrets */
+    });
+    connection.on(sdk.ControlEvent.DISCONNECTED, () => on.disconnected());
+    connection.on(sdk.WebcastEvent.STREAM_END, () => on.ended());
+    connection.on(sdk.WebcastEvent.CHAT, (m) => on.chat(m));
+    connection.on(sdk.WebcastEvent.LIKE, (m) => on.like(m));
+    connection.on(sdk.WebcastEvent.ROOM_USER, (m) => on.viewers(m));
+    connection.on(sdk.WebcastEvent.SHARE, () => on.share());
+    connection.on(sdk.WebcastEvent.ROOM_PIN, (m) => on.pin(m));
+    connection.on(sdk.WebcastEvent.OEC_LIVE_SHOPPING, (m) => on.product(m));
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        connection.connect(roomId),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('Connect timeout')), 15000);
+        }),
+      ]);
+    } catch (error) {
+      await connection.disconnect().catch(() => undefined);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+    return () => connection.disconnect().then(() => undefined).catch(() => undefined);
   }
 
   async unwatch(username: string): Promise<void> {

@@ -1,5 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuthController } from '../auth.controller';
+import { OtpService } from '../otp.service';
 import { AuthService } from '../auth.service';
 
 describe('AuthController', () => {
@@ -36,6 +37,7 @@ describe('AuthController', () => {
           provide: AuthService,
           useValue: mockAuthService,
         },
+        { provide: OtpService, useValue: { request: jest.fn(), verify: jest.fn() } },
       ],
     }).compile();
 

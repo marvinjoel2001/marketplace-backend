@@ -18,6 +18,7 @@ export class DspController {
       pickupLng: parseFloat(pickupLng),
       dropoffLat: parseFloat(dropoffLat),
       dropoffLng: parseFloat(dropoffLng),
+      storeId: typeof body.storeId === 'string' ? body.storeId : undefined,
     });
   }
 

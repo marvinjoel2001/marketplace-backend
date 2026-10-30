@@ -146,10 +146,6 @@ export class ProductsService {
     if (!targetCategory) {
       targetCategory = await this.prisma.category.findFirst();
     }
-    if (!targetCategory) {
-      throw new BadRequestException('No se encontró una categoría válida para el producto');
-    }
-
     // A product is always published by the store that uploads it.
     const targetStore = storeId
       ? await this.prisma.store.findFirst({
@@ -158,6 +154,16 @@ export class ProductsService {
       : null;
     if (!targetStore) {
       throw new BadRequestException('No se encontró la tienda que publica el producto');
+    }
+    // A newly installed marketplace can have stores before its first category/product.
+    if (!targetCategory) {
+      const categoryName = targetStore.category?.trim() || 'Otros';
+      const categorySlug = categoryName.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'otros';
+      targetCategory = await this.prisma.category.upsert({
+        where: { slug: categorySlug },
+        create: { name: categoryName, slug: categorySlug, icon: 'package' },
+        update: {},
+      });
     }
 
     const slug = `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Date.now().toString().slice(-4)}`;
@@ -184,7 +190,8 @@ export class ProductsService {
           create: {
             storeId: targetStore.id,
             price: numericPrice,
-            stock: typeof stock === 'string' ? parseInt(stock, 10) : Number(stock) || 10,
+            // 0 is a real answer ("sold out"); only a missing or invalid value falls back to 10.
+            stock: Number.isInteger(Number(stock)) && Number(stock) >= 0 ? Number(stock) : 10,
             shippingCost: 0,
             estimatedDelivery: '',
             isRecommended: true,

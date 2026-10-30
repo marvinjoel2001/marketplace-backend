@@ -1,12 +1,18 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { DspService } from '../dsp.service';
+import { PrismaService } from '../../../prisma/prisma.service';
+import { SettingsService, DEFAULT_SHIPPING } from '../../settings/settings.service';
 
 describe('DspService', () => {
   let service: DspService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [DspService],
+      providers: [
+        DspService,
+        { provide: PrismaService, useValue: { store: { findUnique: jest.fn().mockResolvedValue(null) } } },
+        { provide: SettingsService, useValue: { getShipping: jest.fn().mockResolvedValue(DEFAULT_SHIPPING) } },
+      ],
     }).compile();
 
     service = module.get<DspService>(DspService);

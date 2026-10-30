@@ -104,6 +104,7 @@ describe('OrdersService', () => {
       deliveryDays: '1,2,3,4,5',
       deliveryStart: '09:00',
       deliveryEnd: '18:00',
+      paymentMethods: 'CASH_ON_DELIVERY,QR_ON_DELIVERY',
     };
     const offer = {
       id: 'off-1',

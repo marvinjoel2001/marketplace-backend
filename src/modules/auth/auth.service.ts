@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 export interface SocialLoginDto {
@@ -48,6 +48,8 @@ export class AuthService {
     }
 
     const provider = dto.provider || 'TIKTOK';
+    // A phone number only identifies someone after a WhatsApp code: see loginWithVerifiedPhone.
+    if (provider === 'PHONE') throw new BadRequestException('Confirma tu celular con el código de WhatsApp');
     const phone = dto.phone ? normalizeBoliviaPhone(dto.phone) : null;
     if (dto.phone && !phone) {
       throw new BadRequestException('Escribe un celular boliviano de 8 dígitos, por ejemplo 71234567');
@@ -57,9 +59,19 @@ export class AuthService {
       where: { email: dto.email.toLowerCase() },
     });
 
+    this.assertCanSignIn(user);
+
     let isNewUser = false;
 
     if (!user) {
+      if (phone) {
+        const duplicatePhone = await this.prisma.user.findFirst({
+          where: { phone },
+        });
+        if (duplicatePhone) {
+          throw new BadRequestException('Ya existe una cuenta con este número de celular');
+        }
+      }
       isNewUser = true;
       user = await this.prisma.user.create({
         data: {
@@ -128,6 +140,55 @@ export class AuthService {
     };
   }
 
+  /** Signs in (or registers) the owner of a phone number that already passed the WhatsApp or SMS code check. */
+  async loginWithVerifiedPhone(phone: string) {
+    const cleanPhone = normalizeBoliviaPhone(phone) ?? phone;
+    const digits = cleanPhone.replace(/\D/g, '').replace(/^591/, '');
+    const email = `${digits}@tel.vitrina.bo`;
+    let existing = await this.prisma.user.findUnique({ where: { email } });
+    if (!existing) {
+      existing = await this.prisma.user.findFirst({
+        where: {
+          OR: [
+            { phone: cleanPhone },
+            { phone: digits },
+            { phone: `+591${digits}` },
+          ],
+        },
+      });
+    }
+    this.assertCanSignIn(existing);
+
+    const user = existing
+      ? await this.prisma.user.update({
+          where: { id: existing.id },
+          data: { phone: cleanPhone, phoneVerifiedAt: new Date() },
+        })
+      : await this.prisma.user.create({
+          data: {
+            email,
+            name: `Cliente ${digits.slice(-4)}`,
+            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(digits)}`,
+            provider: 'PHONE',
+            phone: cleanPhone,
+            phoneVerifiedAt: new Date(),
+          },
+        });
+    const isProfileComplete = Boolean(user.phone && user.address);
+    return {
+      user,
+      isNewUser: !existing,
+      isProfileComplete,
+      message: isProfileComplete ? 'Sesión iniciada con éxito' : 'Falta tu dirección de entrega',
+    };
+  }
+
+  private assertCanSignIn(user: { status: string } | null) {
+    if (user && user.status !== 'ACTIVE') {
+      throw new ForbiddenException('Tu cuenta está suspendida. Escríbenos si crees que es un error.');
+    }
+  }
+
   async enrichProfile(dto: EnrichProfileDto) {
     if (!dto.userId) {
       throw new BadRequestException('userId es obligatorio');
@@ -147,6 +208,14 @@ export class AuthService {
       throw new BadRequestException(
         'El número de celular debe contener 8 dígitos bolivianos (ej. 77012345 o 68912345)'
       );
+    }
+    if (dto.phone && cleanPhone !== user.phone) {
+      const duplicate = await this.prisma.user.findFirst({
+        where: { phone: cleanPhone, id: { not: user.id } },
+      });
+      if (duplicate) {
+        throw new BadRequestException('Este número de celular ya está registrado en otra cuenta');
+      }
     }
     if (!dto.address || !String(dto.address).trim()) {
       throw new BadRequestException('Escribe o marca tu dirección de entrega');

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
+import { SettingsModule } from './modules/settings/settings.module';
 import { ProductsModule } from './modules/products/products.module';
 import { CategoriesModule } from './modules/categories/categories.module';
 import { StoresModule } from './modules/stores/stores.module';
@@ -17,6 +18,7 @@ import { TikTokLivesModule } from './modules/tiktok-lives/tiktok-lives.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    SettingsModule,
     ProductsModule,
     CategoriesModule,
     StoresModule,

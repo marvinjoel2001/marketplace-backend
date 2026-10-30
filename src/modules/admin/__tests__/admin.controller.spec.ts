@@ -1,6 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AdminController } from '../admin.controller';
 import { AdminService } from '../admin.service';
+import { AdminInsightsService } from '../admin-insights.service';
+import { AdminGuard } from '../admin.guard';
+import { SettingsService } from '../../settings/settings.service';
+import { WhatsAppService } from '../../auth/whatsapp.service';
+import { OrdersService } from '../../orders/orders.service';
 
 describe('AdminController', () => {
   let controller: AdminController;
@@ -26,8 +31,15 @@ describe('AdminController', () => {
           provide: AdminService,
           useValue: mockAdminService,
         },
+        { provide: AdminInsightsService, useValue: {} },
+        { provide: SettingsService, useValue: {} },
+        { provide: WhatsAppService, useValue: {} },
+        { provide: OrdersService, useValue: {} },
       ],
-    }).compile();
+    })
+      .overrideGuard(AdminGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<AdminController>(AdminController);
     service = module.get<AdminService>(AdminService);

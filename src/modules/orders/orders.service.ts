@@ -112,6 +112,9 @@ export class OrdersService {
         throw new BadRequestException(`Solo quedan ${offer.stock} de "${offer.product.title}"`);
     }
 
+    if (!store.paymentMethods.split(',').includes(paymentMethod))
+      throw new BadRequestException('Esta tienda no acepta ese método de pago. Elige otro.');
+
     const deliveryAt = new Date(String(data.deliveryAt ?? ''));
     if (!isBookableWindow(store, deliveryAt))
       throw new BadRequestException('Elige un horario de entrega disponible para esta tienda');
@@ -134,9 +137,12 @@ export class OrdersService {
       pickupLng: store.longitude,
       dropoffLat: lat,
       dropoffLng: lng,
+      storeId: store.id,
     });
     const shippingFee = quote.price;
-    const platformCommission = Number((subtotal * COMMISSION_RATE).toFixed(2));
+    // customCommissionRate is a percentage set from /admin; without it the platform rate applies.
+    const commissionRate = store.customCommissionRate != null ? store.customCommissionRate / 100 : COMMISSION_RATE;
+    const platformCommission = Number((subtotal * commissionRate).toFixed(2));
     const vendorEarnings = Number((subtotal - platformCommission).toFixed(2));
     const orderNumber = `VT-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
 

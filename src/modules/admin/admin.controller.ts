@@ -8,12 +8,123 @@ import {
   Param,
   Body,
   Query,
+  UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
+import { AdminInsightsService } from './admin-insights.service';
+import { AdminGuard } from './admin.guard';
+import { SettingsService, ShippingRates, WhatsAppSettings } from '../settings/settings.service';
+import { WhatsAppService } from '../auth/whatsapp.service';
+import { OrdersService } from '../orders/orders.service';
+import { normalizeBoliviaPhone } from '../auth/auth.service';
 
 @Controller('admin')
+@UseGuards(AdminGuard)
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly insights: AdminInsightsService,
+    private readonly settings: SettingsService,
+    private readonly whatsapp: WhatsAppService,
+    private readonly orders: OrdersService,
+  ) {}
+
+  // ==========================================
+  // PANEL: métricas, tiendas, pedidos, envíos, pagos
+  // ==========================================
+  @Get('overview')
+  overview() {
+    return this.insights.overview();
+  }
+
+  @Get('stores/overview')
+  storesOverview() {
+    return this.insights.stores();
+  }
+
+  @Get('stores/:id/detail')
+  storeDetail(@Param('id') id: string) {
+    return this.insights.storeDetail(id);
+  }
+
+  @Patch('stores/:id/config')
+  updateStoreConfig(@Param('id') id: string, @Body() body: Record<string, unknown>) {
+    return this.insights.updateStoreConfig(id, body as never);
+  }
+
+  @Get('orders/overview')
+  ordersOverview(@Query() query: { status?: string; storeId?: string; from?: string; to?: string; q?: string }) {
+    return this.insights.orders(query);
+  }
+
+  @Patch('orders/:id/status')
+  setOrderStatus(@Param('id') id: string, @Body('status') status: string) {
+    return this.orders.updateStatus(id, status);
+  }
+
+  @Get('shipments')
+  shipments(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.insights.shipments(from, to);
+  }
+
+  @Get('payouts')
+  payouts() {
+    return this.insights.payouts();
+  }
+
+  @Post('payouts')
+  createPayout(@Body() body: Record<string, unknown>) {
+    return this.insights.createPayout(body as never);
+  }
+
+  @Get('notifications')
+  notifications() {
+    return this.insights.notifications();
+  }
+
+  @Post('notifications/seen')
+  notificationsSeen() {
+    return this.insights.markNotificationsSeen();
+  }
+
+  // ==========================================
+  // TARIFAS DE ENVÍO (repartidor) y WHATSAPP
+  // ==========================================
+  @Get('shipping')
+  getShipping() {
+    return this.settings.getShipping();
+  }
+
+  @Put('shipping')
+  setShipping(@Body() body: Partial<ShippingRates>) {
+    return this.settings.setShipping(body);
+  }
+
+  @Post('shipping/preview')
+  previewShipping(@Body() body: { storeId?: string; dropoffLat?: number; dropoffLng?: number }) {
+    return this.insights.previewShipping(body);
+  }
+
+  @Get('whatsapp')
+  async getWhatsApp() {
+    const cfg = await this.settings.getWhatsApp();
+    return { settings: { ...cfg, apiKey: '', hasApiKey: Boolean(cfg.apiKey) }, status: await this.whatsapp.status() };
+  }
+
+  @Put('whatsapp')
+  async setWhatsApp(@Body() body: Partial<WhatsAppSettings>) {
+    const cfg = await this.settings.setWhatsApp(body);
+    return { settings: { ...cfg, apiKey: '', hasApiKey: Boolean(cfg.apiKey) }, status: await this.whatsapp.status() };
+  }
+
+  @Post('whatsapp/test')
+  async testWhatsApp(@Body() body: { phone?: string }) {
+    const phone = normalizeBoliviaPhone(String(body?.phone ?? ''));
+    if (!phone) throw new BadRequestException('Escribe un celular boliviano de 8 dígitos');
+    const sent = await this.whatsapp.send(phone, 'Mensaje de prueba de Vitrina Market: tu WhatsApp quedó conectado.');
+    return { sent: sent.delivered, devOnly: Boolean(sent.devOnly) };
+  }
 
   @Get('stats')
   async getStats() {

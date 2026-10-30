@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { AuthService } from '../auth.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 
@@ -70,6 +70,7 @@ describe('AuthService', () => {
         name: 'Usuario Existente',
         phone: '77012345',
         address: 'Equipetrol',
+        status: 'ACTIVE',
       });
       mockPrisma.user.update.mockResolvedValue({
         id: 'usr_existing',
@@ -86,6 +87,35 @@ describe('AuthService', () => {
 
       expect(result.isNewUser).toBe(false);
       expect(result.isProfileComplete).toBe(true);
+    });
+  });
+
+  describe('phone sign-in', () => {
+    it('refuses PHONE through social-login: a number is only proven by a WhatsApp code', async () => {
+      await expect(
+        service.socialLogin({ email: '71234567@tel.vitrina.bo', name: 'X', provider: 'PHONE', phone: '71234567' }),
+      ).rejects.toThrow(BadRequestException);
+      expect(mockPrisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it('creates a verified user keyed by the bare 8 digits', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue(null);
+      mockPrisma.user.create.mockImplementation(({ data }) => Promise.resolve({ id: 'u1', status: 'ACTIVE', ...data }));
+
+      const result = await service.loginWithVerifiedPhone('+591 71234567');
+
+      expect(result.isNewUser).toBe(true);
+      expect(mockPrisma.user.findUnique).toHaveBeenCalledWith({ where: { email: '71234567@tel.vitrina.bo' } });
+      expect(mockPrisma.user.create.mock.calls[0][0].data).toMatchObject({
+        provider: 'PHONE',
+        phone: '+591 71234567',
+        phoneVerifiedAt: expect.any(Date),
+      });
+    });
+
+    it('does not let a suspended user back in', async () => {
+      mockPrisma.user.findUnique.mockResolvedValue({ id: 'u1', status: 'BANNED' });
+      await expect(service.loginWithVerifiedPhone('+591 71234567')).rejects.toThrow(ForbiddenException);
     });
   });
 

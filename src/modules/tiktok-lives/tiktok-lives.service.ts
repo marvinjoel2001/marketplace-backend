@@ -254,6 +254,58 @@ export class TikTokLivesService {
     return data;
   }
 
+  /**
+   * Everything the live room page needs about one seller: its TikTok live (if seen recently)
+   * and, when the seller is a Vitrina store, the products it sells here (featured first).
+   */
+  async room(rawUsername: string) {
+    const username = normalizeUsername(rawUsername);
+    if (!username) throw new BadRequestException('Usuario de TikTok inválido');
+    const row = await this.prisma.tikTokLive.findUnique({ where: { username } });
+    const isLive = Boolean(
+      row &&
+        row.status === 'ACTIVE' &&
+        row.verifiedAt.getTime() > Date.now() - LIVE_RETENTION_SECONDS * 1000,
+    );
+    const store = await this.prisma.store.findFirst({
+      where: {
+        status: 'ACTIVE',
+        OR: [{ tiktokUsername: username }, ...(row?.storeId ? [{ id: row.storeId }] : [])],
+      },
+      include: {
+        offers: { where: { isActive: true }, include: { product: { include: { category: true } } } },
+        liveStreams: { where: { status: 'LIVE' }, orderBy: { startedAt: 'desc' }, take: 1 },
+      },
+    });
+    if (!row && !store) throw new NotFoundException('No encontramos ese live');
+
+    const featured = (store?.liveStreams[0]?.featuredProductIds ?? '').split(',').filter(Boolean);
+    const offers = store
+      ? [...store.offers].sort(
+          (a, b) => Number(featured.includes(b.productId)) - Number(featured.includes(a.productId)),
+        )
+      : [];
+    return {
+      username,
+      isLive: isLive || Boolean(store?.liveStreams.length),
+      live: row ? this.serialize(row) : null,
+      store: store
+        ? {
+            id: store.id,
+            slug: store.slug,
+            name: store.name,
+            logo: store.logo,
+            deliveryDays: store.deliveryDays,
+            deliveryStart: store.deliveryStart,
+            deliveryEnd: store.deliveryEnd,
+            liveTitle: store.liveStreams[0]?.title ?? null,
+            featuredProductIds: featured,
+            offers,
+          }
+        : null,
+    };
+  }
+
   async markEnded(username: string, roomId?: string): Promise<void> {
     const existing = await this.prisma.tikTokLive.findUnique({
       where: { username },

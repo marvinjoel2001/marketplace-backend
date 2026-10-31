@@ -1,7 +1,8 @@
-import { Controller, Post, Get, Body, Param, Headers, Req, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, Headers, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
 import { AuthService, SocialLoginDto, EnrichProfileDto, SyncInterestsDto, normalizeBoliviaPhone } from './auth.service';
 import { OtpService } from './otp.service';
 import { InternalKeyGuard } from './internal-key.guard';
+import { firebaseVerifiedPhone } from './firebase-phone';
 
 @Controller('auth')
 export class AuthController {
@@ -23,13 +24,14 @@ export class AuthController {
     return this.otp.request(body?.phone ?? '', clientIp || req.ip);
   }
 
-  /** Step 2: the code proves the number, and only then is the session user returned. */
+  /** Only a checked OTP or a Firebase token for this same phone may start a session. */
   @Post('otp/verify')
   @UseGuards(InternalKeyGuard)
   async verifyOtp(@Body() body: { phone?: string; code?: string; idToken?: string }) {
     if (body?.idToken) {
       const phone = normalizeBoliviaPhone(body?.phone ?? '');
-      if (!phone) throw new BadRequestException('Número inválido');
+      const proven = normalizeBoliviaPhone((await firebaseVerifiedPhone(body.idToken)) ?? '');
+      if (!phone || proven !== phone) throw new UnauthorizedException('No pudimos confirmar tu número. Pide otro código.');
       return this.authService.loginWithVerifiedPhone(phone);
     }
     const phone = await this.otp.verify(body?.phone ?? '', body?.code ?? '');

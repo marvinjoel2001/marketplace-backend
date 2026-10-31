@@ -204,7 +204,7 @@ export class ProductsService {
           ? JSON.stringify(images)
           : typeof images === 'string' && images.startsWith('[')
           ? images
-          : JSON.stringify([images || 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500']),
+          : JSON.stringify(images ? [images] : []),
         tags: tags || '',
         specifications: typeof specifications === 'object' ? JSON.stringify(specifications) : specifications || '{}',
         color: color || '',

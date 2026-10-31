@@ -8,8 +8,9 @@ async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.enableShutdownHooks();
-  // Product photos travel as base64 in JSON; the upload service still caps each image at 5 MB.
+  // Photos arrive as raw image bytes (seller panel) or as base64 in JSON; the upload service caps each image at 5 MB.
   app.useBodyParser('json', { limit: '8mb' });
+  app.useBodyParser('raw', { type: ['image/jpeg', 'image/png', 'image/webp'], limit: '6mb' });
   app.useStaticAssets(uploadRoot(), { prefix: '/uploads/', maxAge: '30d', index: false });
 
   // Global prefix

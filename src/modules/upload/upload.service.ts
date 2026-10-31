@@ -60,7 +60,23 @@ export class UploadService {
       );
     }
 
-    const buffer = Buffer.from(base64Clean, 'base64');
+    return this.saveImage(Buffer.from(base64Clean, 'base64'), detectedMime, folder, fileName);
+  }
+
+  /**
+   * Stores an image sent as raw bytes (the seller panel's fast path: no base64, a quarter fewer bytes on mobile data).
+   * Same checks as the base64 upload.
+   */
+  async saveImage(buffer: Buffer, mimeType: string, folder: string = 'products', fileName = 'foto') {
+    const detectedMime = String(mimeType || '').split(';')[0].trim().toLowerCase();
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+      throw new BadRequestException('No llegó ninguna imagen');
+    }
+    if (!this.allowedMimeTypes.includes(detectedMime)) {
+      throw new BadRequestException(
+        `Tipo de archivo no permitido (${detectedMime}). Tipos válidos: ${this.allowedMimeTypes.join(', ')}`,
+      );
+    }
     // The declared type must match the file's actual bytes, so nothing but a real image is stored and served.
     if (sniffImage(buffer) !== detectedMime) {
       throw new BadRequestException('El archivo no es una imagen válida (JPG, PNG, WebP o GIF)');
@@ -76,16 +92,14 @@ export class UploadService {
       throw new BadRequestException('Carpeta de destino no válida');
     }
     const targetSubdir = path.join(this.uploadDir, folder);
-    if (!fs.existsSync(targetSubdir)) {
-      fs.mkdirSync(targetSubdir, { recursive: true });
-    }
+    await fs.promises.mkdir(targetSubdir, { recursive: true });
 
     const ext = detectedMime.split('/')[1] || 'jpg';
     const sanitizedName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
     const uniqueFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}_${sanitizedName.endsWith(`.${ext}`) ? sanitizedName : `${sanitizedName}.${ext}`}`;
     const filePath = path.join(targetSubdir, uniqueFileName);
 
-    fs.writeFileSync(filePath, buffer);
+    await fs.promises.writeFile(filePath, buffer);
 
     const publicUrl = `/uploads/${folder}/${uniqueFileName}`;
 

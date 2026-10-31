@@ -136,6 +136,9 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
       // A visible login window uses its real size instead of the 800x600 emulation.
       defaultViewport: headless ? undefined : null,
       args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
         '--lang=es-BO',
         ...(headless ? [] : ['--window-size=1100,860']),
         ...(proxy ? [`--proxy-server=${proxy.origin}`] : []),

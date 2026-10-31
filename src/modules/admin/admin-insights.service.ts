@@ -232,7 +232,8 @@ export class AdminInsightsService {
       const value = body[key];
       if (value === undefined) continue;
       if (value === null) data[key] = null;
-      else if (Number.isFinite(Number(value)) && Number(value) >= 0) data[key] = round(Number(value));
+      else if (Number.isFinite(Number(value)) && Number(value) >= 0 && (key !== 'customCommissionRate' || Number(value) <= 50))
+        data[key] = round(Number(value));
       else throw new BadRequestException('Los montos deben ser números positivos');
     }
     if (body.status !== undefined) {

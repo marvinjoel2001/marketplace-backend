@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Param, Body, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Get, Param, Body, BadRequestException, NotFoundException } from '@nestjs/common';
 import { DspService } from './dsp.service';
 
 @Controller('dsp')
@@ -24,7 +24,9 @@ export class DspController {
 
   @Get('track/:token')
   async getTracking(@Param('token') token: string) {
-    return this.dspService.getTracking(token);
+    const tracking = await this.dspService.getTracking(token);
+    if (!tracking) throw new NotFoundException('Seguimiento no disponible por ahora');
+    return tracking;
   }
 }
 

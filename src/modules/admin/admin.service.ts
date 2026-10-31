@@ -246,41 +246,6 @@ export class AdminService {
     });
   }
 
-  async cancelOrder(id: string, reason?: string) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
-      include: { items: true },
-    });
-    if (!order) throw new NotFoundException('Pedido no encontrado');
-
-    // Revertir o cancelar
-    const updated = await this.prisma.order.update({
-      where: { id },
-      data: {
-        status: 'CANCELLED',
-      },
-    });
-
-    // Restaurar stock en las ofertas de las tiendas
-    for (const item of order.items) {
-      if (item.productOfferId) {
-        await this.prisma.productOffer.update({
-          where: { id: item.productOfferId },
-          data: {
-            stock: { increment: item.quantity },
-          },
-        }).catch(() => null);
-      }
-    }
-
-    return {
-      success: true,
-      message: `Pedido #${order.orderNumber} cancelado exitosamente por el Administrador.`,
-      reason: reason || 'Cancelación administrativa de plataforma',
-      order: updated,
-    };
-  }
-
   // ==========================================
   // CATÁLOGO & MODERACIÓN DE PRODUCTOS
   // ==========================================

@@ -223,7 +223,14 @@ export class AdminController {
     @Param('id') id: string,
     @Body('reason') reason?: string,
   ) {
-    return this.adminService.cancelOrder(id, reason);
+    // Same path as any status change: stock goes back once, and delivered or cancelled orders can't be cancelled again.
+    const order = await this.orders.updateStatus(id, 'CANCELLED');
+    return {
+      success: true,
+      message: `Pedido #${order.orderNumber} cancelado exitosamente por el Administrador.`,
+      reason: reason || 'Cancelación administrativa de plataforma',
+      order,
+    };
   }
 
   // ==========================================

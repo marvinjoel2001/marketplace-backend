@@ -55,10 +55,23 @@ describe('StoresService', () => {
         id: 's1',
         name: 'TechPlus',
         slug: 'techplus',
+        status: 'ACTIVE',
+        walletBalance: 500,
+        bankAccountInfo: '{"account":"123"}',
+        ownerId: 'u1',
       });
 
       const result = await service.findBySlugOrId('techplus');
       expect(result.slug).toBe('techplus');
+      // The public storefront never carries payout details or the owner.
+      expect(result).not.toHaveProperty('walletBalance');
+      expect(result).not.toHaveProperty('bankAccountInfo');
+      expect(result).not.toHaveProperty('ownerId');
+    });
+
+    it('hides suspended stores from the storefront', async () => {
+      mockPrisma.store.findFirst.mockResolvedValue({ id: 's1', slug: 'techplus', status: 'SUSPENDED' });
+      await expect(service.findBySlugOrId('techplus')).rejects.toThrow('Tienda no encontrada');
     });
 
     it('should throw NotFoundException if store does not exist', async () => {

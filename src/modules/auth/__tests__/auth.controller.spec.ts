@@ -1,3 +1,4 @@
+import { PrismaService } from '../../../prisma/prisma.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { AuthController } from '../auth.controller';
 import { OtpService } from '../otp.service';
@@ -38,6 +39,7 @@ describe('AuthController', () => {
           useValue: mockAuthService,
         },
         { provide: OtpService, useValue: { request: jest.fn(), verify: jest.fn() } },
+        { provide: PrismaService, useValue: {} },
       ],
     }).compile();
 
@@ -73,16 +75,17 @@ describe('AuthController', () => {
         city: 'Santa Cruz de la Sierra',
       };
 
-      const result = await controller.enrichProfile(dto);
+      const result = await controller.enrichProfile({ ...dto, userId: 'someone_else' }, { id: 'usr_1', role: 'CUSTOMER' });
       expect(result.isProfileComplete).toBe(true);
       expect(result.user.phone).toBe('77012345');
+      // The session decides whose profile changes, not the body.
       expect(service.enrichProfile).toHaveBeenCalledWith(dto);
     });
   });
 
   describe('getUser', () => {
-    it('should retrieve user profile by id', async () => {
-      const result = await controller.getUser('usr_1');
+    it('should retrieve the signed-in user profile', async () => {
+      const result = await controller.getUser({ id: 'usr_1', role: 'CUSTOMER' });
       expect(result.id).toBe('usr_1');
       expect(service.getUser).toHaveBeenCalledWith('usr_1');
     });

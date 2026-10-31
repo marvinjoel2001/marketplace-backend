@@ -7,7 +7,7 @@ export interface PricedOffer {
 
 /** An offer's discount counts only while it hasn't expired; afterwards the regular price applies again. */
 export function isPromoActive(offer: PricedOffer, now = new Date()): boolean {
-  if (!offer.isFlashSale || !offer.salePrice || offer.salePrice >= offer.price) return false;
+  if (!offer.isFlashSale || !offer.salePrice || offer.salePrice <= 0 || offer.salePrice >= offer.price) return false;
   return !offer.flashSaleEnd || new Date(offer.flashSaleEnd).getTime() > now.getTime();
 }
 

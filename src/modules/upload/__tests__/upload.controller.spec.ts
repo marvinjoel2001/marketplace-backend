@@ -1,3 +1,4 @@
+import { PrismaService } from '../../../prisma/prisma.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { UploadController } from '../upload.controller';
 import { UploadService } from '../upload.service';
@@ -19,6 +20,7 @@ describe('UploadController', () => {
           provide: UploadService,
           useValue: mockService,
         },
+        { provide: PrismaService, useValue: {} },
       ],
     }).compile();
 

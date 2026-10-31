@@ -14,6 +14,16 @@ export function uploadRoot(): string {
   return path.resolve(process.env.UPLOAD_DIR || path.join(process.cwd(), 'public', 'uploads'));
 }
 
+/** The image type a file really is, from its first bytes. */
+function sniffImage(buffer: Buffer): string | null {
+  if (buffer.length < 12) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (buffer.toString('ascii', 0, 4) === 'GIF8') return 'image/gif';
+  return null;
+}
+
 @Injectable()
 export class UploadService {
   private readonly allowedMimeTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -51,6 +61,10 @@ export class UploadService {
     }
 
     const buffer = Buffer.from(base64Clean, 'base64');
+    // The declared type must match the file's actual bytes, so nothing but a real image is stored and served.
+    if (sniffImage(buffer) !== detectedMime) {
+      throw new BadRequestException('El archivo no es una imagen válida (JPG, PNG, WebP o GIF)');
+    }
 
     if (buffer.length > this.maxSizeBytes) {
       throw new BadRequestException(
@@ -89,6 +103,8 @@ export class UploadService {
     if (!items || !Array.isArray(items) || items.length === 0) {
       throw new BadRequestException('Se requiere un array de imágenes');
     }
+
+    if (items.length > 10) throw new BadRequestException('Sube hasta 10 fotos a la vez');
 
     const results = [];
     for (const item of items) {

@@ -40,28 +40,41 @@ describe('DspService', () => {
   });
 
   describe('dispatchOrder', () => {
-    it('should dispatch order and return courier assignment', async () => {
-      const dispatch = await service.dispatchOrder({
-        quoteId: 'dsp_q_123',
-        orderNumber: 'CY-894120-412',
-        customerName: 'Juan Pérez',
-        customerPhone: '+591 77012345',
-        customerAddress: 'Av. San Martín #450',
-        customerLat: -17.785,
-        customerLng: -63.18,
-        storeName: 'TechPlus Bolivia',
-        storeAddress: 'Equipetrol Local 12',
-        storeLat: -17.7685,
-        storeLng: -63.1952,
-        totalAmount: 189,
-        paymentMethod: 'QR_SIMPLE',
-      });
+    const order = {
+      quoteId: 'dsp_q_123',
+      orderNumber: 'VT-894120-412',
+      customerName: 'Juan Pérez',
+      customerPhone: '+591 77012345',
+      customerAddress: 'Av. San Martín #450',
+      customerLat: -17.785,
+      customerLng: -63.18,
+      storeName: 'TechPlus Bolivia',
+      storeAddress: 'Equipetrol Local 12',
+      storeLat: -17.7685,
+      storeLng: -63.1952,
+      totalAmount: 189,
+      paymentMethod: 'CASH_ON_DELIVERY',
+    };
+    afterEach(() => jest.restoreAllMocks());
 
-      expect(dispatch).toBeDefined();
-      expect(dispatch.dspOrderId).toBeDefined();
-      expect(dispatch.trackingToken).toBeDefined();
-      expect(dispatch.driver).toBeDefined();
-      expect(dispatch.driver?.name).toBe('Carlos Mendoza');
+    it('devuelve el pedido que crea OpenDSP', async () => {
+      jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(JSON.stringify({ id: 'dsp_ord_1', trackingToken: 'trk_1', status: 'SEARCHING_DRIVER' }), { status: 201 }),
+      );
+      const dispatch = await service.dispatchOrder(order);
+      expect(dispatch.dspOrderId).toBe('dsp_ord_1');
+      expect(dispatch.trackingToken).toBe('trk_1');
+      expect(dispatch.driver).toBeUndefined();
+    });
+
+    it('si OpenDSP no responde, falla en vez de inventar un repartidor', async () => {
+      jest.spyOn(global, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
+      await expect(service.dispatchOrder(order)).rejects.toThrow('fetch failed');
+    });
+
+    it('si OpenDSP rechaza el pedido, falla con el motivo', async () => {
+      jest.spyOn(global, 'fetch').mockResolvedValue(new Response('quote expired', { status: 400 }));
+      await expect(service.dispatchOrder(order)).rejects.toThrow('OpenDSP HTTP 400');
     });
   });
 });

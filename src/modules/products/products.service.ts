@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_STORE_SELECT } from '../stores/public-store';
 import { AUDIENCES, CONDITIONS, normalizeAxis, normalizeVariants, totalStock } from './variants';
 
 function slugify(text: string) {
@@ -23,13 +24,13 @@ export class ProductsService {
     const { category, flashSale, q, slug } = params;
 
     if (slug) {
-      const product = await this.prisma.product.findUnique({
-        where: { slug },
+      const product = await this.prisma.product.findFirst({
+        where: { slug, status: 'ACTIVE' },
         include: {
           category: true,
           offers: {
-            where: { isActive: true },
-            include: { store: true },
+            where: { isActive: true, store: { status: 'ACTIVE' } },
+            include: { store: { select: PUBLIC_STORE_SELECT } },
             orderBy: { price: 'asc' },
           },
         },
@@ -77,7 +78,7 @@ export class ProductsService {
         category: true,
         offers: {
           where: { isActive: true, store: { status: 'ACTIVE' } },
-          include: { store: true },
+          include: { store: { select: PUBLIC_STORE_SELECT } },
           orderBy: { price: 'asc' },
         },
       },
@@ -89,12 +90,13 @@ export class ProductsService {
     const product = await this.prisma.product.findFirst({
       where: {
         OR: [{ id: idOrSlug }, { slug: idOrSlug }],
+        status: 'ACTIVE',
       },
       include: {
         category: true,
         offers: {
           where: { isActive: true },
-          include: { store: true },
+          include: { store: { select: PUBLIC_STORE_SELECT } },
           orderBy: { price: 'asc' },
         },
       },
@@ -228,7 +230,7 @@ export class ProductsService {
       include: {
         category: true,
         offers: {
-          include: { store: true },
+          include: { store: { select: PUBLIC_STORE_SELECT } },
         },
       },
     });
@@ -249,7 +251,7 @@ export class ProductsService {
     if (data.description !== undefined) updateData.description = data.description;
     if (data.basePrice !== undefined) {
       const price = typeof data.basePrice === 'string' ? parseFloat(data.basePrice) : data.basePrice;
-      if (price <= 0) throw new BadRequestException('El precio base debe ser mayor a 0');
+      if (!Number.isFinite(price) || price <= 0) throw new BadRequestException('El precio base debe ser mayor a 0');
       updateData.basePrice = price;
     }
     if (data.categoryId) updateData.categoryId = data.categoryId;
@@ -276,23 +278,9 @@ export class ProductsService {
     if (data.audience !== undefined) updateData.audience = pickAudience(data.audience);
     if (data.bulky !== undefined) updateData.bulky = Boolean(data.bulky);
 
-    // Si también se pasa stock y/o precio de oferta para una tienda específica
-    if (data.storeId && (data.stock !== undefined || data.price !== undefined)) {
-      const existingOffer = existing.offers.find((o) => o.storeId === data.storeId);
-      if (existingOffer) {
-        await this.prisma.productOffer.update({
-          where: { id: existingOffer.id },
-          data: {
-            ...(data.stock !== undefined && {
-              stock: typeof data.stock === 'string' ? parseInt(data.stock, 10) : data.stock,
-            }),
-            ...(data.price !== undefined && {
-              price: typeof data.price === 'string' ? parseFloat(data.price) : data.price,
-            }),
-          },
-        });
-      }
-    }
+    // Price, stock and options belong to the store's offer and change through /stores/:id/offers/:offerId.
+    if (updateData.categoryId && !(await this.prisma.category.findUnique({ where: { id: updateData.categoryId } })))
+      throw new BadRequestException('Elige una categoría válida');
 
     return this.prisma.product.update({
       where: { id },
@@ -300,15 +288,18 @@ export class ProductsService {
       include: {
         category: true,
         offers: {
-          include: { store: true },
+          include: { store: { select: PUBLIC_STORE_SELECT } },
         },
       },
     });
   }
 
   async updateStock(productId: string, storeId: string, stock: number, price?: number) {
-    if (stock < 0) {
-      throw new BadRequestException('El stock no puede ser negativo');
+    if (!Number.isInteger(stock) || stock < 0) {
+      throw new BadRequestException('El stock debe ser un número entero, 0 o más');
+    }
+    if (price !== undefined && (!Number.isFinite(price) || price <= 0)) {
+      throw new BadRequestException('El precio debe ser mayor a 0');
     }
 
     const offer = await this.prisma.productOffer.findFirst({
@@ -323,7 +314,7 @@ export class ProductsService {
       where: { id: offer.id },
       data: {
         stock,
-        ...(price !== undefined && price > 0 && { price }),
+        ...(price !== undefined && { price }),
       },
       include: {
         product: true,

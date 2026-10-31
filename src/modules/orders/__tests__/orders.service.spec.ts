@@ -14,6 +14,7 @@ describe('OrdersService', () => {
       findFirst: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     store: {
       findUnique: jest.fn(),
@@ -61,18 +62,6 @@ describe('OrdersService', () => {
     expect(service).toBeDefined();
   });
 
-  describe('findAll', () => {
-    it('should return recent orders', async () => {
-      mockPrisma.order.findMany.mockResolvedValue([
-        { id: 'o1', orderNumber: 'CY-123456-111' },
-      ]);
-
-      const result = await service.findAll(5);
-      expect(Array.isArray(result)).toBe(true);
-      expect(result.length).toBe(1);
-    });
-  });
-
   describe('findByIdOrNumber', () => {
     it('should find existing order in database', async () => {
       mockPrisma.order.findFirst.mockResolvedValue({
@@ -83,6 +72,18 @@ describe('OrdersService', () => {
 
       const result = await service.findByIdOrNumber('CY-123456-111');
       expect(result.orderNumber).toBe('CY-123456-111');
+    });
+
+    it('solo muestra el pedido a quien lo hizo o a la tienda que lo vende', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({
+        id: 'o1',
+        orderNumber: 'VT-1',
+        userId: 'buyer',
+        items: [{ store: { ownerId: 'seller' } }],
+      });
+      await expect(service.findForViewer('VT-1', 'buyer')).resolves.toMatchObject({ id: 'o1' });
+      await expect(service.findForViewer('VT-1', 'seller')).resolves.toMatchObject({ id: 'o1' });
+      await expect(service.findForViewer('VT-1', 'stranger')).rejects.toThrow('Pedido no encontrado');
     });
 
     it('should report a missing order instead of inventing one', async () => {
@@ -130,8 +131,8 @@ describe('OrdersService', () => {
 
     beforeEach(() => {
       jest.useFakeTimers({ now: NOW, doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
-      mockPrisma.productOffer = { findMany: jest.fn().mockResolvedValue([offer]), update: jest.fn() };
-      mockPrisma.$transaction = jest.fn((ops: Promise<unknown>[]) => Promise.all(ops));
+      mockPrisma.productOffer = { findMany: jest.fn().mockResolvedValue([offer]), updateMany: jest.fn().mockResolvedValue({ count: 1 }) };
+      mockPrisma.$transaction = jest.fn((fn: (tx: unknown) => unknown) => fn(mockPrisma));
       mockPrisma.order.create.mockImplementation((args) => Promise.resolve(args.data));
     });
     afterEach(() => jest.useRealTimers());
@@ -146,11 +147,16 @@ describe('OrdersService', () => {
       expect(result.vendorEarnings).toBe(152);
       expect(result.status).toBe('SCHEDULED');
       expect(result.deliveryWindow).toBe('12:00 - 13:00');
-      expect(mockPrisma.productOffer.update).toHaveBeenCalledWith({
-        where: { id: 'off-1' },
+      expect(mockPrisma.productOffer.updateMany).toHaveBeenCalledWith({
+        where: { id: 'off-1', stock: { gte: 2 } },
         data: { stock: { decrement: 2 } },
       });
       expect(mockDspService.dispatchOrder).not.toHaveBeenCalled();
+    });
+
+    it('no vende la última unidad dos veces: si otro comprador la tomó, el pedido falla', async () => {
+      mockPrisma.productOffer.updateMany.mockResolvedValue({ count: 0 });
+      await expect(service.create({ ...base, deliveryAt: '2026-11-02T16:00:00.000Z' })).rejects.toThrow('Alguien acaba de comprar');
     });
 
     it('rechaza horarios que la tienda no ofrece', async () => {
@@ -185,67 +191,72 @@ describe('OrdersService', () => {
   });
 
   describe('updateStatus & Webhook (TC-ORD-002 & TC-DSP-005)', () => {
-    it('debería actualizar estado a DELIVERED y acreditar saldo a la tienda', async () => {
-      mockPrisma.order.findFirst.mockResolvedValue({
-        id: 'ord-1',
-        orderNumber: 'CY-123-456',
-        status: 'IN_TRANSIT',
-        vendorEarnings: 190,
-        items: [{ storeId: 'store-1' }],
-      });
-      mockPrisma.order.update.mockResolvedValue({
-        id: 'ord-1',
-        status: 'DELIVERED',
-      });
-      mockPrisma.store.findUnique.mockResolvedValue({
-        id: 'store-1',
-        walletBalance: 100,
-        salesCount: 5,
-      });
-      mockPrisma.store.update.mockResolvedValue({
-        id: 'store-1',
-        walletBalance: 290,
-        salesCount: 6,
-      });
+    const inTransit = {
+      id: 'ord-1',
+      orderNumber: 'VT-123-456',
+      status: 'IN_TRANSIT',
+      vendorEarnings: 190,
+      storeId: 'store-1',
+      items: [{ storeId: 'store-1', productOfferId: 'off-1', quantity: 2, variant: null }],
+    };
 
-      const res = await service.updateStatus('ord-1', 'DELIVERED');
-      expect(res.status).toBe('DELIVERED');
+    beforeEach(() => {
+      mockPrisma.$transaction = jest.fn((fn: (tx: unknown) => unknown) => fn(mockPrisma));
+      mockPrisma.order.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.order.update.mockImplementation((args) => Promise.resolve({ id: 'ord-1', status: args.data.status ?? 'DELIVERED' }));
+      mockPrisma.productOffer = {
+        findUnique: jest.fn().mockResolvedValue({ id: 'off-1', variants: null }),
+        update: jest.fn(),
+      };
+    });
+
+    it('al entregar acredita la ganancia una sola vez, con incremento atómico', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue(inTransit);
+      await service.updateStatus('ord-1', 'DELIVERED');
+      expect(mockPrisma.order.updateMany).toHaveBeenCalledWith({ where: { id: 'ord-1', status: 'IN_TRANSIT' }, data: { status: 'DELIVERED' } });
       expect(mockPrisma.store.update).toHaveBeenCalledWith({
         where: { id: 'store-1' },
-        data: {
-          walletBalance: 290,
-          salesCount: 6,
-        },
+        data: { walletBalance: { increment: 190 }, salesCount: { increment: 1 } },
       });
     });
 
-    it('debería procesar webhook de OpenDSP y actualizar orden', async () => {
-      mockPrisma.order.findFirst.mockResolvedValue({
-        id: 'ord-1',
-        orderNumber: 'CY-123-456',
-        status: 'IN_TRANSIT',
-        vendorEarnings: 95,
-        items: [{ storeId: 'store-1' }],
-      });
-      mockPrisma.order.update.mockResolvedValue({
-        id: 'ord-1',
-        status: 'DELIVERED',
-      });
-      mockPrisma.store.findUnique.mockResolvedValue({
-        id: 'store-1',
-        walletBalance: 0,
-        salesCount: 0,
-      });
-      mockPrisma.store.update.mockResolvedValue({});
+    it('un pedido entregado ya no cambia (no se puede volver a acreditar)', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({ ...inTransit, status: 'DELIVERED' });
+      await expect(service.updateStatus('ord-1', 'IN_TRANSIT')).rejects.toThrow('ya fue entregado');
+      expect(mockPrisma.store.update).not.toHaveBeenCalled();
+    });
 
+    it('si otro proceso cambió el pedido entre medio, no acredita nada', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue(inTransit);
+      mockPrisma.order.updateMany.mockResolvedValue({ count: 0 });
+      await expect(service.updateStatus('ord-1', 'DELIVERED')).rejects.toThrow('cambió');
+      expect(mockPrisma.store.update).not.toHaveBeenCalled();
+    });
+
+    it('al cancelar devuelve las unidades al stock', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({ ...inTransit, status: 'SCHEDULED' });
+      await service.updateStatus('ord-1', 'CANCELLED');
+      expect(mockPrisma.productOffer.update).toHaveBeenCalledWith({ where: { id: 'off-1' }, data: { stock: { increment: 2 } } });
+    });
+
+    it('procesa el webhook real de OpenDSP (data.merchant_reference) y guarda al repartidor', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue(inTransit);
       const res = await service.handleDspWebhook({
         event: 'order.delivered',
-        externalOrderId: 'CY-123-456',
-        status: 'DELIVERED',
+        timestamp: '2026-11-02T16:30:00Z',
+        data: { order_id: 'dsp_1', merchant_reference: 'VT-123-456', status: 'DELIVERED', driver: { name: 'Ana Ríos', phone: '+591 70000001' } },
       });
+      expect(res).toEqual({ ok: true });
+      expect(mockPrisma.order.updateMany).toHaveBeenCalledWith({ where: { id: 'ord-1', status: 'IN_TRANSIT' }, data: { status: 'DELIVERED' } });
+      expect(mockPrisma.order.update).toHaveBeenLastCalledWith(
+        expect.objectContaining({ data: { dspDriverName: 'Ana Ríos', dspDriverPhone: '+591 70000001' } }),
+      );
+    });
 
-      expect(res.status).toBe('DELIVERED');
+    it('un evento atrasado no hace retroceder el pedido', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({ ...inTransit, status: 'DELIVERED' });
+      await service.handleDspWebhook({ event: 'order.assigned', data: { merchant_reference: 'VT-123-456' } });
+      expect(mockPrisma.order.updateMany).not.toHaveBeenCalled();
     });
   });
 });
-

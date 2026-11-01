@@ -93,7 +93,9 @@ La asociación se guarda en `TikTokAccount` con unicidad por username y tienda; 
 
 ## Docker, pruebas y alcance
 
-El Dockerfile instala Chromium y usa el usuario `node`, conservando el sandbox (el host debe permitirlo). El compose publica Redis solo en loopback (6380); el backend container usa `redis://tiktok-redis:6379/0`. Pasar variables mediante entorno, nunca secretos en argumentos de build.
+El Dockerfile instala Chromium y usa el usuario `node`, conservando el sandbox (el host debe permitirlo). Si Railway define `RAILWAY_RUN_UID=0` por los permisos del volumen SQLite, el ejecutable `chromium-nonroot` prepara únicamente el perfil de TikTok y lanza Chromium como `node` mediante `su-exec`, sin quitar su sandbox. El perfil debe estar en `/app/.tiktok-profile` (por defecto) o dentro de `/data`; `--disable-dev-shm-usage` utiliza el directorio temporal para evitar el límite de memoria compartida del contenedor. Los fallos del ciclo incluyen un motivo fijo (`browser_root`, `browser_sandbox`, `browser_permissions`, etc.), sin imprimir errores del proveedor que podrían contener secretos.
+
+El compose publica Redis solo en loopback (6380); el backend container usa `redis://tiktok-redis:6379/0`. Pasar variables mediante entorno, nunca secretos en argumentos de build.
 
 ```sh
 npm run build

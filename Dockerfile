@@ -19,11 +19,11 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl libc6-compat chromium nss freetype harfbuzz ca-certificates ttf-freefont
+RUN apk add --no-cache openssl libc6-compat chromium nss freetype harfbuzz ca-certificates ttf-freefont su-exec
 
 ENV NODE_ENV=production
 ENV PUPPETEER_SKIP_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chromium-nonroot
 ENV PORT=4000
 ENV DATABASE_URL="file:/app/prisma/dev.db"
 
@@ -32,10 +32,11 @@ ENV DATABASE_URL="file:/app/prisma/dev.db"
 COPY package*.json ./
 COPY prisma ./prisma/
 COPY scripts ./scripts/
+COPY --chmod=755 scripts/chromium-nonroot.sh /usr/local/bin/chromium-nonroot
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
-# Chromium runs with its sandbox; do not launch the browser as root.
+# The launcher also drops Chromium's privileges if Railway overrides USER for its volume.
 RUN chown -R node:node /app
 USER node
 

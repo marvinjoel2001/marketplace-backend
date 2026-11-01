@@ -10,6 +10,7 @@ import { TikTokLivesWorker } from './tiktok-lives.worker';
 import { TikTokLivesController } from './tiktok-lives.controller';
 import { TikTokSessionController } from './tiktok-session.controller';
 import { LiveFeedService } from './live-feed.service';
+import { SellerSignalsService } from './seller-signals.service';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
@@ -23,6 +24,7 @@ import { LiveFeedService } from './live-feed.service';
     TikTokLivesService,
     TikTokLivesWorker,
     LiveFeedService,
+    SellerSignalsService,
   ],
   exports: [TikTokLivesService],
 })

@@ -41,6 +41,12 @@ describe('TikTokLivesService/API', () => {
         upsert: jest.fn(),
       },
       tikTokAccount: { findUnique: jest.fn(), upsert: jest.fn() },
+      tikTokSellerSignal: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn(),
+        update: jest.fn(),
+      },
       store: {
         findUnique: jest.fn(),
         update: jest.fn(),
@@ -106,6 +112,22 @@ describe('TikTokLivesService/API', () => {
     const response = await service.active({});
     expect(response.data.map((live) => live.username)).toEqual(['activa', 'pendiente']);
     expect(response.meta).toMatchObject({ active_count: 1, refreshing_count: 1 });
+  });
+  it('pone primero los lives de la ciudad del visitante sin ocultar el resto del país', async () => {
+    prisma.tikTokLive.findMany.mockResolvedValue([
+      { ...row(), username: 'grande_lpz', title: 'Remate de ropa', viewerCount: 900, city: 'La Paz' },
+      { ...row(), username: 'chica_scz', title: 'Remate de ropa', viewerCount: 5, city: 'Santa Cruz' },
+      { ...row(), username: 'sin_ciudad', title: 'Remate de ropa', viewerCount: 50, city: null },
+      { ...row(), username: 'alteña', title: 'Remate de ropa', viewerCount: 1, city: 'El Alto' },
+    ]);
+    const scz = await service.active({ near: 'santa cruz' });
+    expect(scz.data.map((l) => l.username)).toEqual(['chica_scz', 'grande_lpz', 'sin_ciudad', 'alteña']);
+    expect(scz.meta).toMatchObject({ near: 'Santa Cruz', near_count: 1 });
+    // El Alto counts as next door for a La Paz visitor.
+    const lpz = await service.active({ near: 'La Paz' });
+    expect(lpz.data.map((l) => l.username)).toEqual(['grande_lpz', 'alteña', 'sin_ciudad', 'chica_scz']);
+    // An unknown city never breaks the page: it just uses the national order.
+    expect((await service.active({ near: 'Lima' })).meta.near).toBeNull();
   });
   it('retira una sala terminada explícitamente antes de vencer el margen', async () => {
     prisma.tikTokLive.findUnique.mockResolvedValue({ ...row(), verifiedAt: new Date(Date.now() - 61000) });

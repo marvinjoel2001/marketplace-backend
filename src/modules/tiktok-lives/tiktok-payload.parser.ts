@@ -116,3 +116,47 @@ export function parseRooms(payload: unknown): LiveCandidate[] {
   walk(payload, 0);
   return [...result.values()];
 }
+
+/**
+ * Captions (with hashtags) of an account's own videos, from the profile page's hydration or its
+ * `/api/post/item_list` responses. Videos by other authors (reposts, recommendations) are skipped.
+ */
+export function parseProfileVideos(payload: unknown, username: string): { captions: string[]; bio?: string } {
+  const captions = new Map<string, string>();
+  let bio: string | undefined;
+  let visited = 0;
+  const clean = username.toLowerCase();
+  function walk(value: any, depth: number): void {
+    if (!value || typeof value !== 'object' || depth > 14 || ++visited > 20000) return;
+    if (Array.isArray(value)) {
+      value.slice(0, 200).forEach((item) => walk(item, depth + 1));
+      return;
+    }
+    const author = value.author;
+    const authorName = typeof author === 'string' ? author : author?.uniqueId ?? author?.unique_id;
+    if (
+      typeof value.desc === 'string' &&
+      (typeof value.id === 'string' || typeof value.id === 'number') &&
+      (value.video || value.imagePost || authorName) &&
+      (!authorName || String(authorName).toLowerCase() === clean) &&
+      captions.size < 40
+    ) {
+      const tags = (Array.isArray(value.textExtra) ? value.textExtra : [])
+        .map((t: any) => (typeof t?.hashtagName === 'string' ? `#${t.hashtagName}` : ''))
+        .filter(Boolean);
+      const text = [value.desc, ...tags].join(' ').trim().slice(0, 1000);
+      if (text) captions.set(String(value.id), text);
+    }
+    const user = value.user;
+    if (
+      !bio &&
+      user &&
+      typeof user.signature === 'string' &&
+      String(user.uniqueId ?? user.unique_id ?? '').toLowerCase() === clean
+    )
+      bio = user.signature.slice(0, 1000);
+    Object.values(value).forEach((child) => walk(child, depth + 1));
+  }
+  walk(payload, 0);
+  return { captions: [...captions.values()], bio };
+}

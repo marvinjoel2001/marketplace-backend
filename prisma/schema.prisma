@@ -108,9 +108,26 @@ model TikTokLive {
   verifiedAt     DateTime
   storeId        String?
   store          Store?   @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  /// City hinted by the title, hashtags, username, nickname or bio (not a verified location).
+  city           String?
   updatedAt      DateTime @updatedAt
 
   @@index([status, isSelling, countryCode, verifiedAt])
+}
+
+/// Selling evidence that is not in the live title: the account's own video captions and its live chat.
+model TikTokSellerSignal {
+  username       String    @id
+  /// Captions of the account's recent videos mention sales (null: not checked yet).
+  videoSelling   Boolean?
+  videoKeywords  String    @default("[]")
+  videoCheckedAt DateTime?
+  /// Viewers asked for prices / wrote "mío" in this room's chat, or TikTok Shop products were pinned.
+  chatSelling    Boolean?
+  chatRoomId     String?
+  chatHits       Int       @default(0)
+  chatCheckedAt  DateTime?
+  updatedAt      DateTime  @updatedAt
 }
 
 model Category {

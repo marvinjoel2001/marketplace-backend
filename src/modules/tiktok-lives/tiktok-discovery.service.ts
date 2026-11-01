@@ -12,7 +12,7 @@ import {
   TikTokBlockedError,
   viewerCount,
 } from './tiktok-lives.types';
-import { parseRooms } from './tiktok-payload.parser';
+import { parseProfileVideos, parseRooms } from './tiktok-payload.parser';
 import { EcommerceClassifier } from './ecommerce-classifier.service';
 
 const loadPuppeteer = new Function(
@@ -205,20 +205,7 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
     const browser = await this.launch(this.config.headless);
     this.browser = browser;
     try {
-      const proxy = this.config.proxy;
-      const page = await browser.newPage();
-      await page.setExtraHTTPHeaders({
-        'Accept-Language': 'es-BO,es;q=0.9,en;q=0.5',
-      });
-      await page.emulateTimezone('America/La_Paz');
-      await page.setViewport({ width: 1366, height: 900 });
-      // Keep navigator.language native. Forcing es-BO here makes TikTok's
-      // client send an unsupported language to its feed API, yielding no rooms.
-      if (proxy?.username)
-        await page.authenticate({
-          username: decodeURIComponent(proxy.username),
-          password: decodeURIComponent(proxy.password),
-        });
+      const page = await this.preparePage(browser);
       const candidates = new Map<string, LiveCandidate>();
       const pending = new Set<Promise<void>>();
       let responses = 0;
@@ -290,6 +277,116 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
     }
   }
 
+  private async preparePage(browser: Browser): Promise<Page> {
+    const proxy = this.config.proxy;
+    const page = await browser.newPage();
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'es-BO,es;q=0.9,en;q=0.5',
+    });
+    await page.emulateTimezone('America/La_Paz');
+    await page.setViewport({ width: 1366, height: 900 });
+    // Keep navigator.language native. Forcing es-BO here makes TikTok's
+    // client send an unsupported language to its feed API, yielding no rooms.
+    if (proxy?.username)
+      await page.authenticate({
+        username: decodeURIComponent(proxy.username),
+        password: decodeURIComponent(proxy.password),
+      });
+    return page;
+  }
+
+  /**
+   * Opens each account's profile and reads the captions of its recent videos (hydration plus the
+   * `item_list` responses the page loads). Sellers who don't say "venta" in the live title usually
+   * do in their videos. Stops at a CAPTCHA/block and returns what it already read.
+   */
+  async scanProfiles(usernames: string[]): Promise<Map<string, { captions: string[]; bio?: string }>> {
+    const result = new Map<string, { captions: string[]; bio?: string }>();
+    const clean = [...new Set(usernames.map(normalizeUsername).filter((u): u is string => !!u))];
+    if (!clean.length || this.interrupted) return result;
+    return this.exclusive(async () => {
+      const browser = await this.launch(this.config.headless);
+      this.browser = browser;
+      try {
+        const page = await this.preparePage(browser);
+        let current = '';
+        const pending = new Set<Promise<void>>();
+        const add = (username: string, found: { captions: string[]; bio?: string }) => {
+          const previous = result.get(username) ?? { captions: [] };
+          result.set(username, {
+            captions: [...new Set([...previous.captions, ...found.captions])].slice(0, 40),
+            bio: previous.bio ?? found.bio,
+          });
+        };
+        page.on('response', (response) => {
+          const url = new URL(response.url());
+          if (
+            !url.hostname.endsWith('tiktok.com') ||
+            !/\/api\/(post|repost)\/item_list/.test(url.pathname) ||
+            !response.headers()['content-type']?.includes('application/json')
+          )
+            return;
+          const username = current;
+          const task = response
+            .text()
+            .then((body) => {
+              if (body.length <= 3e6 && username) add(username, parseProfileVideos(JSON.parse(body), username));
+            })
+            .catch(() => undefined)
+            .then(() => {
+              pending.delete(task);
+            });
+          pending.add(task);
+        });
+        for (const username of clean) {
+          if (this.interrupted) break;
+          current = username;
+          try {
+            const response = await page.goto(`https://www.tiktok.com/@${encodeURIComponent(username)}`, {
+              waitUntil: 'domcontentloaded',
+              timeout: 25000,
+            });
+            if (response && [403, 429].includes(response.status())) throw new TikTokBlockedError();
+            await page
+              .waitForSelector('[data-e2e="user-post-item"], #captcha-verify-container', { timeout: 8000 })
+              .catch(() => undefined);
+            await this.assertNotBlocked(page);
+            for (const payload of await page.$$eval(
+              'script#SIGI_STATE, script#__UNIVERSAL_DATA_FOR_REHYDRATION__',
+              (scripts) => scripts.map((s) => s.textContent ?? ''),
+            )) {
+              if (payload.length > 3e6) continue;
+              try {
+                add(username, parseProfileVideos(JSON.parse(payload), username));
+              } catch {
+                /* malformed hydration */
+              }
+            }
+            // Captions also live in the grid's alt/aria text when the API response is not observed.
+            const alts = await page.$$eval('[data-e2e="user-post-item"] img[alt], [data-e2e="user-post-item-desc"]', (nodes) =>
+              nodes.slice(0, 30).map((n) => (n.getAttribute('alt') ?? n.textContent ?? '').trim()).filter(Boolean),
+            );
+            add(username, { captions: alts });
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            await Promise.allSettled(pending);
+            if (!result.has(username)) result.set(username, { captions: [] });
+          } catch (error) {
+            if (error instanceof TikTokBlockedError) {
+              this.logger.warn('TikTok pidió verificación al revisar perfiles; se reintenta en el próximo ciclo');
+              break;
+            }
+            /* one profile failing doesn't stop the rest */
+          }
+        }
+        await Promise.allSettled(pending);
+        return result;
+      } finally {
+        await browser.close().catch(() => undefined);
+        if (this.browser === browser) this.browser = undefined;
+      }
+    });
+  }
+
   /** Round-robin slice of the search terms, so many terms don't stretch one cycle past the cron. */
   private nextSearchTerms(): string[] {
     const terms = this.config.searchTerms;
@@ -308,7 +405,8 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
     return candidates
       .map((live) => {
         const result = this.classifier.classify(live);
-        return { live, priority: result.listable ? 2 : result.isSelling ? 1 : 0 };
+        // Undecided lives (not gaming/music) still get a look at their videos and chat.
+        return { live, priority: result.listable ? 3 : result.isSelling ? 2 : result.nonSales ? 0 : 1 };
       })
       .sort((a, b) => b.priority - a.priority)
       .slice(0, this.config.maxCandidates)

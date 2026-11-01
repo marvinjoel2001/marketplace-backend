@@ -28,8 +28,9 @@ export class TikTokLivesController {
     @Query('limit') limit?: string,
     @Query('category') category?: string,
     @Query('city') city?: string,
+    @Query('near') near?: string,
   ) {
-    return this.lives.active({ page, limit, category, city });
+    return this.lives.active({ page, limit, category, city, near });
   }
 
   /** Live room: the seller's live, its Vitrina products and what is happening in the chat. */

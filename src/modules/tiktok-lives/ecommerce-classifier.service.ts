@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { contains, extractPrice, extractWhatsApp } from './text-signals';
+import type { SellerSignals } from './seller-signals';
 import { TikTokLivesConfig } from './tiktok-lives.config';
 import {
   LiveCandidate,
@@ -81,7 +82,81 @@ export const SALES = [
   'emprendimiento',
   'pidan',
   'disponibles',
+  // Many sellers never write "venta": they announce a remate, offers, low prices or new stock.
+  'remates',
+  'remato',
+  'rematando',
+  'rematamos',
+  'liquidando',
+  'liquidamos',
+  'rebaja',
+  'rebajas',
+  'rebajado',
+  'rebajados',
+  'oferton',
+  'ofertazo',
+  'ofertazos',
+  'ofertita',
+  'ofertitas',
+  'descuentazo',
+  'ganga',
+  'gangas',
+  'barato',
+  'baratos',
+  'barata',
+  'baratas',
+  'baratito',
+  'baratitos',
+  'economico',
+  'economicos',
+  'precio de fabrica',
+  'precios bajos',
+  '2x1',
+  '3x2',
+  'lote',
+  'lotes',
+  'docena',
+  'docenas',
+  'mercaderia',
+  'nuevo ingreso',
+  'nuevos ingresos',
+  'nuevos modelos',
+  'importado',
+  'importados',
+  'talla',
+  'tallas',
+  'outlet',
+  'bazar',
+  'feria',
+  'black friday',
+  'envio',
+  'envio gratis',
+  'a domicilio',
+  'entregas',
+  'pedidos al',
+  'info al',
+  'vendemos',
+  'vendiendo',
+  'vende',
+  'pidelo',
+  'pide el tuyo',
+  'separa',
+  'separalo',
+  'aparta',
+  'apartalo',
+  'reserva',
+  'comenta mio',
+  'subastas',
+  'subasto',
+  'productos',
+  'emprendedora',
+  'emprendedor',
+  'x mayor',
+  'al por menor',
+  'live shopping',
 ];
+/** Shopping emojis sellers put in titles instead of words (🛍️ 🛒 🏷️ 💸 📦). */
+const SALES_EMOJI = /\u{1F6CD}|\u{1F6D2}|\u{1F3F7}|\u{1F4B8}|\u{1F4E6}|\u{1F45C}|\u{1F457}|\u{1F460}/u;
 const CATEGORY_TERMS: [LiveCategory, string[]][] = [
   [
     'Ropa',
@@ -263,7 +338,12 @@ const NON_SALES = [
 @Injectable()
 export class EcommerceClassifier {
   constructor(private readonly config: TikTokLivesConfig) {}
-  classify(live: LiveCandidate, registeredLocalStore = false) {
+  /**
+   * `signals`: evidence gathered outside the title. Chat in this same room counts like the title
+   * (it describes this broadcast); video captions or an older room's chat describe the account,
+   * like its bio, so they don't turn a gaming/music live into a sale.
+   */
+  classify(live: LiveCandidate, registeredLocalStore = false, signals?: SellerSignals | null) {
     const text = normalizeText(
       [live.title, live.nickname, live.bio, ...live.tags].join(' '),
     );
@@ -307,11 +387,25 @@ export class EcommerceClassifier {
                   : null;
     // A price or an order number in the broadcast title is a sale even without sales words.
     const titleOffer =
-      !!extractPrice(live.title) || !!extractWhatsApp(live.title);
+      !!extractPrice(live.title) || !!extractWhatsApp(live.title) ||
+      SALES_EMOJI.test(live.title);
+    const chatThisRoom =
+      !!signals?.chatSelling && !!live.roomId && signals.chatRoomId === live.roomId;
+    const accountSignal = !!signals?.videoSelling || !!signals?.chatSelling;
     const isSelling =
       strongKeywords.length > 0 ||
       titleOffer ||
-      ((matchedKeywords.length > 0 || shopUsername) && !nonSales);
+      chatThisRoom ||
+      ((matchedKeywords.length > 0 || shopUsername || accountSignal) && !nonSales);
+    const salesEvidence = strongKeywords.length > 0 || titleOffer
+      ? 'title'
+      : chatThisRoom
+        ? 'chat'
+        : matchedKeywords.length > 0 || shopUsername
+          ? 'account'
+          : accountSignal && !nonSales
+            ? signals?.videoSelling ? 'videos' : 'chat'
+            : null;
     // Most matched terms wins, so "faldas y carteras" isn't decided by list order alone.
     const categoryScores = CATEGORY_TERMS.map(
       ([name, terms]) =>
@@ -323,6 +417,10 @@ export class EcommerceClassifier {
     )?.[0];
     return {
       isSelling,
+      /** Where the sale was seen: title, chat, account (name/bio/username) or videos. */
+      salesEvidence,
+      /** Gaming/music/talk stream: not worth sampling its chat or videos. */
+      nonSales,
       // Listed in the marketplace: selling, not explicitly abroad, and with regional evidence only if required.
       listable:
         isSelling &&

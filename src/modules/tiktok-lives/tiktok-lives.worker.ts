@@ -7,6 +7,7 @@ import { TikTokConnectorService } from './tiktok-connector.service';
 import { TikTokLiveCache } from './tiktok-live-cache.service';
 import { TikTokLivesConfig } from './tiktok-lives.config';
 import { TikTokLivesService } from './tiktok-lives.service';
+import { discoveryFailureReason } from './tiktok-discovery-error';
 import {
   LiveCandidate,
   normalizeUsername,
@@ -69,10 +70,10 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
         this.logger.log(
           `Exploración TikTok: ${candidates.length} candidatos, ${selling.length} vendedores revisados${this.config.requireRegion ? ' con filtro regional' : ''}`,
         );
-      } catch {
+      } catch (error) {
         const wait = this.retry.fail('discovery');
         this.logger.warn(
-          `Exploración TikTok pausada (bloqueo o fallo); reintento después de ${Math.ceil(wait / 1000)}s`,
+          `Exploración TikTok pausada (${discoveryFailureReason(error)}); reintento después de ${Math.ceil(wait / 1000)}s`,
         );
       }
     });

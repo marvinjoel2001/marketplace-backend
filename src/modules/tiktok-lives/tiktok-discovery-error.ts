@@ -3,7 +3,7 @@ export function discoveryFailureReason(error: unknown): string {
   const message = error instanceof Error ? `${error.name}: ${error.message}` : '';
   if (/running as root without --no-sandbox/i.test(message))
     return 'browser_root: Chromium no puede arrancar como root con sandbox; revisa RAILWAY_RUN_UID';
-  if (/no usable sandbox|failed to move to new namespace|operation not permitted/i.test(message))
+  if (/no usable sandbox|failed to move to new namespace|operation not permitted|sandbox\/linux\/services\/credentials\.cc/i.test(message))
     return 'browser_sandbox: el contenedor no permite el aislamiento requerido por Chromium';
   if (/EACCES|permission denied|read-only file system/i.test(message))
     return 'browser_permissions: el usuario del servicio no puede escribir en el perfil o ejecutar Chromium';

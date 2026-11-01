@@ -97,6 +97,10 @@ El Dockerfile instala Chromium y usa el usuario `node`, conservando el sandbox (
 
 El compose publica Redis solo en loopback (6380); el backend container usa `redis://tiktok-redis:6379/0`. Pasar variables mediante entorno, nunca secretos en argumentos de build.
 
+Railway puede denegar la creación de namespaces de usuario con `sandbox/linux/services/credentials.cc:131` y `Permission denied (13)`, aun como `node`. No se aplica un downgrade automático. `TIKTOK_BROWSER_NO_SANDBOX=true` es una opción explícita para el operador: agrega `--no-sandbox` y `--disable-setuid-sandbox` y reduce la protección ante contenido web malicioso. Requiere evaluar y autorizar ese cambio; una alternativa es ejecutar el navegador en otro entorno que soporte su sandbox. Chromium mantiene un usuario sin privilegios y solo hereda variables del sistema operativo, sin claves del backend, aunque esa separación no reemplaza al sandbox.
+
+`meta.discovery_status` distingue `starting`, `ok` y `error`; `discovery_checked_at` indica el último ciclo finalizado. Sin salas y con un fallo, `meta.status=unavailable`, para que la web no anuncie que confirmó la ausencia de transmisiones. El diagnóstico técnico se conserva en logs y no se publica en la interfaz.
+
 ```sh
 npm run build
 npm test -- --testPathPattern=tiktok-lives

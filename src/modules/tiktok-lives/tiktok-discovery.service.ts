@@ -14,6 +14,7 @@ import {
 } from './tiktok-lives.types';
 import { parseRooms } from './tiktok-payload.parser';
 import { EcommerceClassifier } from './ecommerce-classifier.service';
+import { browserEnvironment, browserSandboxArgs } from './tiktok-browser-options';
 
 const loadPuppeteer = new Function(
   'return import("puppeteer")',
@@ -131,11 +132,13 @@ export class TikTokDiscoveryService implements OnModuleDestroy {
     await mkdir(this.config.profileDir, { recursive: true });
     return extra.launch({
       headless,
+      env: browserEnvironment(process.env),
       executablePath: this.config.browserPath,
       userDataDir: this.config.profileDir,
       // A visible login window uses its real size instead of the 800x600 emulation.
       defaultViewport: headless ? undefined : null,
       args: [
+        ...browserSandboxArgs(this.config.browserNoSandbox),
         '--lang=es-BO',
         ...(headless ? [] : ['--window-size=1100,860']),
         ...(proxy ? [`--proxy-server=${proxy.origin}`] : []),

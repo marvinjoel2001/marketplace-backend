@@ -23,6 +23,10 @@ export class TikTokLivesConfig {
   get headless(): boolean {
     return this.env.get('TIKTOK_HEADLESS') !== 'false';
   }
+  /** Explicit operator opt-in for hosts that cannot provide Chromium's sandbox. */
+  get browserNoSandbox(): boolean {
+    return this.env.get('TIKTOK_BROWSER_NO_SANDBOX') === 'true';
+  }
   /** Persistent Chromium profile that keeps the operator's TikTok session between cycles. Never commit it. */
   get profileDir(): string {
     return resolve(this.env.get<string>('TIKTOK_PROFILE_DIR', '.tiktok-profile'));

@@ -15,6 +15,7 @@ import {
 } from './live-insights';
 import { TikTokLiveCache } from './tiktok-live-cache.service';
 import { TikTokLivesConfig } from './tiktok-lives.config';
+import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
 import {
   ActiveLive,
   CATEGORIES,
@@ -34,6 +35,7 @@ export class TikTokLivesService {
     private readonly classifier: EcommerceClassifier,
     private readonly cache: TikTokLiveCache,
     private readonly config: TikTokLivesConfig,
+    private readonly health: TikTokDiscoveryHealth = new TikTokDiscoveryHealth(),
   ) {}
 
   async active(query: {
@@ -122,13 +124,16 @@ export class TikTokLivesService {
       meta: {
         cache: this.cache.backend,
         worker_enabled: this.config.enabled,
+        discovery_status: this.health.status,
+        discovery_checked_at: this.health.checkedAt,
         freshness_seconds: LIVE_TTL_SECONDS,
         retention_seconds: LIVE_RETENTION_SECONDS,
         active_count: filtered.filter((live) => live.verification_status === 'fresh').length,
         refreshing_count: filtered.filter((live) => live.verification_status === 'refreshing').length,
         status: !this.config.enabled ? 'disabled'
           : filtered.some((live) => live.verification_status === 'fresh') ? 'live'
-          : filtered.length ? 'refreshing' : 'searching',
+          : filtered.length ? 'refreshing'
+          : this.health.status === 'error' ? 'unavailable' : 'searching',
         server_time: new Date(now).toISOString(),
         country_code: this.config.country,
         cities,

@@ -19,6 +19,7 @@ import { TikTokLivesConfig } from '../tiktok-lives.config';
 import { TikTokLivesController } from '../tiktok-lives.controller';
 import { LiveFeedService } from '../live-feed.service';
 import { TikTokLivesService } from '../tiktok-lives.service';
+import { TikTokDiscoveryHealth } from '../tiktok-discovery-health';
 
 describe('TikTok LIVE API + SQLite integration (isolated database)', () => {
   let app: INestApplication;
@@ -63,6 +64,7 @@ describe('TikTok LIVE API + SQLite integration (isolated database)', () => {
     const module = await Test.createTestingModule({
       controllers: [TikTokLivesController],
       providers: [
+        TikTokDiscoveryHealth,
         TikTokLivesService,
         EcommerceClassifier,
         TikTokLiveCache,

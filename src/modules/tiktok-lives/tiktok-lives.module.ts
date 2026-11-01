@@ -10,11 +10,13 @@ import { TikTokLivesWorker } from './tiktok-lives.worker';
 import { TikTokLivesController } from './tiktok-lives.controller';
 import { TikTokSessionController } from './tiktok-session.controller';
 import { LiveFeedService } from './live-feed.service';
+import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
   controllers: [TikTokLivesController, TikTokSessionController],
   providers: [
+    TikTokDiscoveryHealth,
     TikTokLivesConfig,
     EcommerceClassifier,
     TikTokDiscoveryService,

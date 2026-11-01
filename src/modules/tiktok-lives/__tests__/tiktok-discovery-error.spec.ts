@@ -1,4 +1,4 @@
-import { discoveryFailureReason } from '../tiktok-discovery-error';
+import { discoveryFailureDetails, discoveryFailureReason } from '../tiktok-discovery-error';
 
 describe('discovery failure diagnostics', () => {
   it.each([
@@ -17,6 +17,17 @@ describe('discovery failure diagnostics', () => {
   it('does not log credentials or user-supplied content', () => {
     for (const error of [new Error('https://user:secret@proxy.test cookie=private'), 'token=private', null]) {
       expect(discoveryFailureReason(error)).toBe('unknown: el ciclo no pudo terminar');
+    }
+  });
+  it('redacts diagnostic URLs, credentials and configured secrets', () => {
+    process.env.TIKTOK_PROXY_URL = 'http://name:private@proxy.test';
+    try {
+      const details = discoveryFailureDetails(new Error('EACCES profile\nhttp://name:private@proxy.test\ncookie: private-session\nhttps://tiktok.com/?token=private'));
+      expect(details).toContain('EACCES profile');
+      expect(details).not.toMatch(/name|private|https?:/);
+      expect(discoveryFailureDetails(new Error('x'.repeat(3000)))).toHaveLength(1600);
+    } finally {
+      delete process.env.TIKTOK_PROXY_URL;
     }
   });
 });

@@ -19,3 +19,18 @@ export function discoveryFailureReason(error: unknown): string {
     return 'network: TikTok o la conexión devolvieron un error';
   return 'unknown: el ciclo no pudo terminar';
 }
+
+/** A bounded excerpt for startup diagnostics, with credentials and complete URLs removed. */
+export function discoveryFailureDetails(error: unknown): string {
+  if (!(error instanceof Error)) return '';
+  let message = error.message;
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && value.length >= 6 && /SECRET|TOKEN|PASSWORD|API_KEY|PROXY|INTERNAL_KEY/.test(key))
+      message = message.split(value).join('[redacted]');
+  }
+  return message
+    .replace(/https?:\/\/[^\s]+/gi, '[url]')
+    .replace(/(?:authorization|cookie|password|token|secret)\s*[:=][^\r\n]*/gi, '[redacted]')
+    .replace(/[\r\n]+/g, ' ')
+    .slice(0, 1600);
+}

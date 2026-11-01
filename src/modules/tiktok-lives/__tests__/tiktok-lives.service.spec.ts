@@ -4,6 +4,7 @@ import { EcommerceClassifier } from '../ecommerce-classifier.service';
 import { TikTokLivesController } from '../tiktok-lives.controller';
 import { TikTokLiveCache } from '../tiktok-live-cache.service';
 import { ActiveLive } from '../tiktok-lives.types';
+import { TikTokDiscoveryHealth } from '../tiktok-discovery-health';
 
 describe('TikTokLivesService/API', () => {
   const config: any = {
@@ -80,6 +81,26 @@ describe('TikTokLivesService/API', () => {
       expect.objectContaining({ verified_at: response.data[0].verified_at }),
     ], '1');
     expect(response.data[0].verification_status).toBe('fresh');
+  });
+  it('distingue un fallo del descubrimiento de una búsqueda correcta sin resultados', async () => {
+    const health = new TikTokDiscoveryHealth();
+    const enabledConfig = { ...config, enabled: true };
+    service = new TikTokLivesService(prisma, new EcommerceClassifier(config), cache, enabledConfig, health);
+    cache.read.mockResolvedValue([]);
+    health.fail();
+    const failed = await service.active({});
+    expect(failed.meta).toMatchObject({ status: 'unavailable', discovery_status: 'error' });
+    expect(failed.meta.discovery_checked_at).not.toBeNull();
+    health.success();
+    expect((await service.active({})).meta).toMatchObject({ status: 'searching', discovery_status: 'ok' });
+  });
+  it('un fallo de descubrimiento no retira salas que todavía están verificadas', async () => {
+    const health = new TikTokDiscoveryHealth();
+    health.fail();
+    service = new TikTokLivesService(prisma, new EcommerceClassifier(config), cache, { ...config, enabled: true }, health);
+    const result = await service.active({});
+    expect(result.data).toHaveLength(1);
+    expect(result.meta).toMatchObject({ status: 'live', discovery_status: 'error' });
   });
   it('conserva salas pendientes sin renovar su verificación durante un fallo temporal', async () => {
     const data = (await service.active({})).data;

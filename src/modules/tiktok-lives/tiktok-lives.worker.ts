@@ -7,7 +7,8 @@ import { TikTokConnectorService } from './tiktok-connector.service';
 import { TikTokLiveCache } from './tiktok-live-cache.service';
 import { TikTokLivesConfig } from './tiktok-lives.config';
 import { TikTokLivesService } from './tiktok-lives.service';
-import { discoveryFailureReason } from './tiktok-discovery-error';
+import { discoveryFailureDetails, discoveryFailureReason } from './tiktok-discovery-error';
+import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
 import {
   LiveCandidate,
   normalizeUsername,
@@ -39,6 +40,7 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
     private readonly lives: TikTokLivesService,
     private readonly cache: TikTokLiveCache,
     private readonly config: TikTokLivesConfig,
+    private readonly health: TikTokDiscoveryHealth = new TikTokDiscoveryHealth(),
   ) {}
 
   onApplicationBootstrap(): void {
@@ -67,13 +69,15 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
             ? this.trustSighting(live, owned)
             : this.verify(live.username, live, undefined, owned),
         );
+        this.health.success();
         this.logger.log(
           `Exploración TikTok: ${candidates.length} candidatos, ${selling.length} vendedores revisados${this.config.requireRegion ? ' con filtro regional' : ''}`,
         );
       } catch (error) {
+        this.health.fail();
         const wait = this.retry.fail('discovery');
         this.logger.warn(
-          `Exploración TikTok pausada (${discoveryFailureReason(error)}); reintento después de ${Math.ceil(wait / 1000)}s`,
+          `Exploración TikTok pausada (${discoveryFailureReason(error)}); reintento después de ${Math.ceil(wait / 1000)}s. ${discoveryFailureDetails(error)}`,
         );
       }
     });

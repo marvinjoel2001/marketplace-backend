@@ -13,6 +13,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CashRegisterModule } from './modules/cash-register/cash-register.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { TikTokLivesModule } from './modules/tiktok-lives/tiktok-lives.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { TikTokLivesModule } from './modules/tiktok-lives/tiktok-lives.module';
     CashRegisterModule,
     UploadModule,
     TikTokLivesModule,
+    NotificationsModule,
   ],
 })
 export class AppModule {}

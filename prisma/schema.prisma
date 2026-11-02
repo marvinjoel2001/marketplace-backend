@@ -65,6 +65,7 @@ model Store {
   deliveryStart  String         @default("09:00")
   deliveryEnd    String         @default("18:00")
   paymentMethods String         @default("CASH_ON_DELIVERY,QR_ON_DELIVERY") // Checkout methods the admin enabled for this store
+  openDspEnabled Boolean        @default(true) // Deliveries go to OpenDSP; false = the store delivers with its own people
   shippingBaseFare Float?       // Driver fare per delivery for this store; null = platform default
   shippingPerKm  Float?         // Driver fare per km for this store; null = platform default
   statusReason   String?        // Why the admin suspended or blocked the store
@@ -239,6 +240,8 @@ model Order {
   dspQuoteId          String?
   dspOrderId          String?
   dspTrackingToken    String?
+  dspTrackingUrl      String?     // Public page where the customer follows the driver
+  paidAt              DateTime?
   dspDriverName       String?     @default("Carlos Mendoza")
   dspDriverPhone      String?     @default("+591 77012345")
   dspDriverRating     Float?      @default(4.9)
@@ -386,4 +389,19 @@ model Payout {
   createdAt DateTime @default(now())
 
   @@index([storeId, kind])
+}
+
+/// In-app messages for a customer about their orders (shown under the bell and in /notificaciones).
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  orderId   String?
+  kind      String    // ORDER_CREATED, PAYMENT_CONFIRMED, DISPATCHED, DRIVER_ASSIGNED, IN_TRANSIT, DELIVERED, CANCELLED
+  title     String
+  body      String
+  link      String?   // Internal path ("/pedido/VT-...") or external tracking URL
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
 }

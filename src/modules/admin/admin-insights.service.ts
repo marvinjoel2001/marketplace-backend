@@ -158,6 +158,7 @@ export class AdminInsightsService {
         createdAt: store.createdAt,
         products: store._count.offers,
         paymentMethods: store.paymentMethods.split(',').filter(Boolean),
+        openDspEnabled: store.openDspEnabled,
         rates: { baseFare: rates.baseFare, perKm: rates.perKm, custom: store.shippingBaseFare !== null || store.shippingPerKm !== null },
         customCommissionRate: store.customCommissionRate,
         walletBalance: store.walletBalance,
@@ -212,6 +213,7 @@ export class AdminInsightsService {
     id: string,
     body: {
       paymentMethods?: string[];
+      openDspEnabled?: boolean;
       shippingBaseFare?: number | null;
       shippingPerKm?: number | null;
       customCommissionRate?: number | null;
@@ -228,6 +230,7 @@ export class AdminInsightsService {
       if (methods.length === 0) throw new BadRequestException('Deja al menos un método de pago activo para esta tienda');
       data.paymentMethods = methods.join(',');
     }
+    if (body.openDspEnabled !== undefined) data.openDspEnabled = Boolean(body.openDspEnabled);
     for (const key of ['shippingBaseFare', 'shippingPerKm', 'customCommissionRate'] as const) {
       const value = body[key];
       if (value === undefined) continue;
@@ -426,7 +429,7 @@ export class AdminInsightsService {
       id: string; orderNumber: string; storeId: string | null; status: string; paymentMethod: string; paymentStatus: string;
       subtotal: number; shippingFee: number; totalAmount: number; deliveryAt: Date | null; deliveryWindow: string | null;
       customerName: string; customerPhone: string; customerAddress: string; customerReference: string | null;
-      customerLat: number; customerLng: number; dspDriverName: string | null; dspDriverPhone: string | null; createdAt: Date;
+      customerLat: number; customerLng: number; dspDriverName: string | null; dspDriverPhone: string | null; dspOrderId?: string | null; createdAt: Date;
       items: { productTitle: string; quantity: number; unitPrice: number }[];
     },
     storeName: string,
@@ -448,6 +451,8 @@ export class AdminInsightsService {
       // "Para quién es": the person receiving the order, as typed at checkout.
       recipient: { name: o.customerName, phone: o.customerPhone, address: o.customerAddress, reference: o.customerReference, lat: o.customerLat, lng: o.customerLng },
       driver: o.dspDriverName ? { name: o.dspDriverName, phone: o.dspDriverPhone } : null,
+      // Set once OpenDSP Core accepted the delivery.
+      dspOrderId: o.dspOrderId ?? null,
       items: o.items.map((i) => ({ title: i.productTitle, quantity: i.quantity, unitPrice: i.unitPrice })),
     };
   }

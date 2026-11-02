@@ -1,9 +1,13 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async getStats() {
     const [stores, orders, users, products, liveStreams] = await Promise.all([
@@ -260,6 +264,8 @@ export class AdminService {
         status: 'CANCELLED',
       },
     });
+
+    if (order.status !== 'CANCELLED') await this.notifications.notifyOrder(updated, 'CANCELLED');
 
     // Restaurar stock en las ofertas de las tiendas
     for (const item of order.items) {

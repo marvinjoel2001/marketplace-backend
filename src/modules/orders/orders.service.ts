@@ -1,14 +1,23 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DspService } from '../dsp/dsp.service';
+import { NotificationsService, type OrderEvent } from '../notifications/notifications.service';
 import { effectivePrice } from '../products/pricing';
 import { parseVariants } from '../products/variants';
 import { isBookableWindow, windowLabel } from '../stores/delivery-schedule';
 
 /** The driver is requested this long before the window starts, so they reach the store on time. */
 export const DISPATCH_BEFORE_MINUTES = 20;
-export const PAYMENT_METHODS = ['CASH_ON_DELIVERY', 'QR_ON_DELIVERY'] as const;
+export const PAYMENT_METHODS = ['CASH_ON_DELIVERY', 'QR_ON_DELIVERY', 'QR_PREPAID'] as const;
+/** Paid on delivery: the payment is collected when the order is delivered. */
+const PAY_ON_DELIVERY = ['CASH_ON_DELIVERY', 'QR_ON_DELIVERY'];
+/** Customer-visible step reached with each status, for their notifications. */
+const STATUS_EVENT: Record<string, OrderEvent> = {
+  IN_TRANSIT: 'IN_TRANSIT',
+  DELIVERED: 'DELIVERED',
+  CANCELLED: 'CANCELLED',
+};
 const COMMISSION_RATE = 0.05;
 
 export interface CreateOrderDto {
@@ -33,6 +42,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly dspService: DspService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async findAll(limit: number = 20) {
@@ -223,7 +233,28 @@ export class OrdersService {
         }),
       ),
     ]);
+    await this.notifications.notifyOrder(order, 'ORDER_CREATED');
     return order;
+  }
+
+  /**
+   * "Ya pagué" on a QR_PREPAID order. There is no bank integration yet, so this only works with
+   * PAYMENTS_TEST_MODE=true: the customer's word marks the order as paid.
+   */
+  async confirmPayment(idOrNumber: string) {
+    if (process.env.PAYMENTS_TEST_MODE !== 'true')
+      throw new ForbiddenException('El pago con QR todavía no está conectado a un banco. Paga al recibir.');
+    const order = await this.prisma.order.findFirst({ where: { OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }] } });
+    if (!order) throw new NotFoundException(`Orden ${idOrNumber} no encontrada`);
+    if (order.paymentMethod !== 'QR_PREPAID') throw new BadRequestException('Este pedido se paga al recibir');
+    if (order.status === 'CANCELLED') throw new BadRequestException('Este pedido fue cancelado');
+    if (order.paymentStatus === 'PAID') return this.findByIdOrNumber(order.id);
+    const updated = await this.prisma.order.update({
+      where: { id: order.id },
+      data: { paymentStatus: 'PAID', paidAt: new Date() },
+    });
+    await this.notifications.notifyOrder(updated, 'PAYMENT_CONFIRMED');
+    return this.findByIdOrNumber(order.id);
   }
 
   /** Requests the driver for scheduled orders whose window is about to start. */
@@ -232,16 +263,26 @@ export class OrdersService {
     if (this.dispatching) return;
     this.dispatching = true;
     try {
+      // Stores that deliver with their own people never go to OpenDSP; prepaid orders wait for the payment.
+      const ownDelivery = await this.prisma.store.findMany({ where: { openDspEnabled: false }, select: { id: true } });
       const due = await this.prisma.order.findMany({
         where: {
           status: 'SCHEDULED',
           dispatchedAt: null,
           deliveryAt: { lte: new Date(now.getTime() + DISPATCH_BEFORE_MINUTES * 60_000) },
+          storeId: { notIn: ownDelivery.map((s) => s.id) },
+          NOT: { paymentMethod: 'QR_PREPAID', paymentStatus: { not: 'PAID' } },
         },
         include: { items: true },
         take: 20,
       });
-      for (const order of due) await this.dispatch(order);
+      for (const order of due) {
+        try {
+          await this.dispatch(order);
+        } catch (error) {
+          this.logger.warn(`No se pudo despachar el pedido ${order.orderNumber}: ${(error as Error).message}`);
+        }
+      }
     } catch (error) {
       this.logger.warn(`No se pudieron despachar pedidos programados: ${(error as Error).message}`);
     } finally {
@@ -249,11 +290,28 @@ export class OrdersService {
     }
   }
 
+  /** Sends one order to OpenDSP now (the admin's "Pedir repartidor" button, or the scheduler). */
+  async dispatchNow(idOrNumber: string) {
+    const order = await this.prisma.order.findFirst({ where: { OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }] } });
+    if (!order) throw new NotFoundException(`Orden ${idOrNumber} no encontrada`);
+    if (order.dspOrderId) return order;
+    if (!['SCHEDULED', 'CONFIRMED', 'PREPARING'].includes(order.status))
+      throw new BadRequestException('Este pedido ya no se puede enviar a reparto');
+    if (order.paymentMethod === 'QR_PREPAID' && order.paymentStatus !== 'PAID')
+      throw new BadRequestException('El cliente todavía no pagó con QR');
+    const store = order.storeId ? await this.prisma.store.findUnique({ where: { id: order.storeId } }) : null;
+    if (store && !store.openDspEnabled)
+      throw new BadRequestException('Esta tienda entrega con sus propios repartidores (OpenDSP desactivado en la tienda)');
+    const updated = await this.dispatch(order);
+    if (!updated) throw new BadRequestException('OpenDSP no respondió. Inténtalo de nuevo en un momento.');
+    return updated;
+  }
+
   private async dispatch(order: { id: string; orderNumber: string; storeId: string | null; [key: string]: any }) {
     const store = order.storeId
       ? await this.prisma.store.findUnique({ where: { id: order.storeId } })
       : null;
-    if (!store) return;
+    if (!store) return null;
     const response = await this.dspService.dispatchOrder({
       quoteId: order.dspQuoteId || `dsp_q_${Date.now()}`,
       orderNumber: order.orderNumber,
@@ -268,21 +326,30 @@ export class OrdersService {
       storeLng: store.longitude,
       totalAmount: order.totalAmount,
       paymentMethod: order.paymentMethod,
+      paid: order.paymentStatus === 'PAID',
+      deliveryAt: order.deliveryAt,
+      deliveryWindow: order.deliveryWindow,
     });
-    await this.prisma.order.update({
+    // Core unreachable: the order stays SCHEDULED and the next scheduler pass retries it.
+    if (!response) return null;
+    const updated = await this.prisma.order.update({
       where: { id: order.id },
       data: {
         status: 'DSP_DISPATCHED',
         dispatchedAt: new Date(),
         dspOrderId: response.dspOrderId,
         dspTrackingToken: response.trackingToken,
+        dspTrackingUrl: response.trackingUrl,
         dspDriverName: response.driver?.name ?? null,
         dspDriverPhone: response.driver?.phone ?? null,
         dspDriverRating: response.driver?.rating ?? null,
         dspDriverPhoto: response.driver?.photoUrl ?? null,
         dspEstimatedMinutes: response.estimatedMinutes,
       },
+      include: { items: true },
     });
+    await this.notifications.notifyOrder(updated, 'DISPATCHED');
+    return updated;
   }
 
   async updateStatus(idOrNumber: string, newStatus: string) {
@@ -306,11 +373,17 @@ export class OrdersService {
       throw new BadRequestException('No se puede modificar el estado de una orden cancelada');
     }
 
+    const delivered = newStatus === 'DELIVERED' && order.status !== 'DELIVERED';
     const updatedOrder = await this.prisma.order.update({
       where: { id: order.id },
-      data: { status: newStatus },
+      data: {
+        status: newStatus,
+        // Cash or QR on delivery is collected by the driver at the door.
+        ...(delivered && PAY_ON_DELIVERY.includes(order.paymentMethod) && order.paymentStatus !== 'PAID' && { paymentStatus: 'PAID', paidAt: new Date() }),
+      },
       include: { items: true },
     });
+    if (newStatus !== order.status && STATUS_EVENT[newStatus]) await this.notifications.notifyOrder(updatedOrder, STATUS_EVENT[newStatus]);
 
     // Si el estado pasa a DELIVERED, abonar las ganancias a la billetera de la tienda
     if (newStatus === 'DELIVERED' && order.status !== 'DELIVERED' && order.vendorEarnings) {
@@ -332,20 +405,52 @@ export class OrdersService {
     return updatedOrder;
   }
 
+  /**
+   * Status updates from OpenDSP Core. Core sends { event, data: { order_id, merchant_reference, status, driver } };
+   * the flat { orderId | externalOrderId, status } shape is still accepted for manual calls.
+   */
   async handleDspWebhook(payload: any) {
-    const { event, orderId, externalOrderId, status } = payload;
-    const orderRef = externalOrderId || orderId;
-
-    if (!orderRef) {
+    const data = payload?.data ?? payload ?? {};
+    const event: string = payload?.event ?? '';
+    const orderRef = data.merchant_reference || data.externalOrderId || payload?.externalOrderId;
+    const dspOrderId = data.order_id || data.orderId || payload?.orderId;
+    if (!orderRef && !dspOrderId) {
       throw new BadRequestException('Webhook payload sin referencia de orden');
     }
 
-    const targetStatus = status === 'DELIVERED' || event === 'order.delivered'
-      ? 'DELIVERED'
-      : status === 'PICKED_UP' || event === 'order.in_transit'
-        ? 'IN_TRANSIT'
-        : status || 'DSP_DISPATCHED';
+    const order = await this.prisma.order.findFirst({
+      where: { OR: [orderRef && { orderNumber: orderRef }, dspOrderId && { dspOrderId }, dspOrderId && { id: dspOrderId }].filter(Boolean) as any },
+    });
+    if (!order) throw new NotFoundException(`Orden ${orderRef || dspOrderId} no encontrada`);
 
-    return this.updateStatus(orderRef, targetStatus);
+    const status: string = data.status ?? payload?.status ?? '';
+    if (data.driver?.name || data.tracking_url) {
+      const withDriver = await this.prisma.order.update({
+        where: { id: order.id },
+        data: {
+          ...(data.driver?.name && { dspDriverName: data.driver.name, dspDriverPhone: data.driver.phone ?? null, dspDriverRating: null }),
+          ...(data.tracking_url && { dspTrackingUrl: data.tracking_url }),
+        },
+      });
+      if (data.driver?.name && data.driver.name !== order.dspDriverName) await this.notifications.notifyOrder(withDriver, 'DRIVER_ASSIGNED');
+    }
+
+    // Core cancelling only drops the driver; the customer's order stays open for the admin to resend it.
+    if (status === 'CANCELLED' || event === 'order.cancelled') {
+      return this.prisma.order.update({
+        where: { id: order.id },
+        data: { status: 'SCHEDULED', dispatchedAt: null, dspOrderId: null, dspTrackingToken: null, dspDriverName: null, dspDriverPhone: null },
+        include: { items: true },
+      });
+    }
+
+    const targetStatus =
+      status === 'DELIVERED' || event === 'order.delivered'
+        ? 'DELIVERED'
+        : status === 'IN_TRANSIT' || status === 'PICKED_UP' || event === 'order.in_transit'
+          ? 'IN_TRANSIT'
+          : 'DSP_DISPATCHED';
+    if (order.status === targetStatus) return this.findByIdOrNumber(order.id);
+    return this.updateStatus(order.id, targetStatus);
   }
 }

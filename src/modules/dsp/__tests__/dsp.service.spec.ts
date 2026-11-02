@@ -40,7 +40,13 @@ describe('DspService', () => {
   });
 
   describe('dispatchOrder', () => {
-    it('should dispatch order and return courier assignment', async () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('sends the promised window and returns the Core order', async () => {
+      const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ id: 'core-1', trackingToken: 'trk-1', status: 'CREATED' }),
+      } as any);
       const dispatch = await service.dispatchOrder({
         quoteId: 'dsp_q_123',
         orderNumber: 'CY-894120-412',
@@ -54,14 +60,38 @@ describe('DspService', () => {
         storeLat: -17.7685,
         storeLng: -63.1952,
         totalAmount: 189,
-        paymentMethod: 'QR_SIMPLE',
+        paymentMethod: 'CASH_ON_DELIVERY',
+        deliveryAt: new Date('2026-11-02T14:00:00.000Z'),
+        deliveryWindow: '10:00 - 11:00',
       });
 
-      expect(dispatch).toBeDefined();
-      expect(dispatch.dspOrderId).toBeDefined();
-      expect(dispatch.trackingToken).toBeDefined();
-      expect(dispatch.driver).toBeDefined();
-      expect(dispatch.driver?.name).toBe('Carlos Mendoza');
+      expect(dispatch).toEqual(expect.objectContaining({ dspOrderId: 'core-1', trackingToken: 'trk-1', status: 'CREATED' }));
+      expect(dispatch?.driver).toBeUndefined();
+      const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+      expect(body.merchantReference).toBe('CY-894120-412');
+      expect(body.packageNotes).toContain('10:00 - 11:00');
+      expect(body.packageNotes).toContain('COBRAR EN EFECTIVO');
+    });
+
+    it('returns null instead of inventing a driver when Core is unreachable', async () => {
+      jest.spyOn(global, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+      expect(await service.dispatchOrder({
+        quoteId: 'dsp_q_123',
+        orderNumber: 'CY-894120-412',
+        customerName: 'Juan Pérez',
+        customerPhone: '+591 77012345',
+        customerAddress: 'Av. San Martín #450',
+        customerLat: -17.785,
+        customerLng: -63.18,
+        storeName: 'TechPlus Bolivia',
+        storeAddress: 'Equipetrol Local 12',
+        storeLat: -17.7685,
+        storeLng: -63.1952,
+        totalAmount: 189,
+        paymentMethod: 'CASH_ON_DELIVERY',
+        deliveryAt: new Date('2026-11-02T14:00:00.000Z'),
+        deliveryWindow: '10:00 - 11:00',
+      })).toBeNull();
     });
   });
 });

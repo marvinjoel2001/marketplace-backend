@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { OrdersService } from '../orders.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { DspService } from '../../dsp/dsp.service';
+import { NotificationsService } from '../../notifications/notifications.service';
 
 describe('OrdersService', () => {
   let service: OrdersService;
@@ -17,9 +18,11 @@ describe('OrdersService', () => {
     },
     store: {
       findUnique: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     },
   };
+  const mockNotifications = { notifyOrder: jest.fn() };
 
   const mockDspService = {
     getQuote: jest.fn().mockResolvedValue({
@@ -48,6 +51,7 @@ describe('OrdersService', () => {
           provide: DspService,
           useValue: mockDspService,
         },
+        { provide: NotificationsService, useValue: mockNotifications },
       ],
     }).compile();
 
@@ -182,6 +186,46 @@ describe('OrdersService', () => {
       expect(mockDspService.dispatchOrder).toHaveBeenCalledTimes(1);
       expect(mockPrisma.order.update.mock.calls[0][0].data.status).toBe('DSP_DISPATCHED');
     });
+
+    it('no envía a OpenDSP tiendas con reparto propio ni pedidos QR sin pagar', async () => {
+      mockPrisma.store.findMany.mockResolvedValueOnce([{ id: 'own-store' }]);
+      mockPrisma.order.findMany.mockResolvedValue([]);
+      await service.dispatchDueOrders(new Date('2026-11-02T15:45:00Z'));
+      const where = mockPrisma.order.findMany.mock.calls[0][0].where;
+      expect(where.storeId).toEqual({ notIn: ['own-store'] });
+      expect(where.NOT).toEqual({ paymentMethod: 'QR_PREPAID', paymentStatus: { not: 'PAID' } });
+    });
+  });
+
+  describe('pago con QR (modo prueba)', () => {
+    const prepaid = { id: 'o2', orderNumber: 'VT-2', userId: 'u1', status: 'SCHEDULED', paymentMethod: 'QR_PREPAID', paymentStatus: 'PENDING' };
+    afterEach(() => delete process.env.PAYMENTS_TEST_MODE);
+
+    it('"Ya pagué" marca el pedido como pagado y avisa al cliente', async () => {
+      process.env.PAYMENTS_TEST_MODE = 'true';
+      mockPrisma.order.findFirst.mockResolvedValue(prepaid);
+      mockPrisma.order.update.mockResolvedValue({ ...prepaid, paymentStatus: 'PAID' });
+      await service.confirmPayment('VT-2');
+      expect(mockPrisma.order.update.mock.calls[0][0].data.paymentStatus).toBe('PAID');
+      expect(mockNotifications.notifyOrder).toHaveBeenCalledWith(expect.objectContaining({ id: 'o2' }), 'PAYMENT_CONFIRMED');
+    });
+
+    it('sin modo prueba no acepta "Ya pagué"', async () => {
+      await expect(service.confirmPayment('VT-2')).rejects.toThrow('todavía no está conectado');
+    });
+
+    it('no pide repartidor mientras el pedido QR no esté pagado', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue(prepaid);
+      await expect(service.dispatchNow('VT-2')).rejects.toThrow('todavía no pagó');
+      expect(mockDspService.dispatchOrder).not.toHaveBeenCalled();
+    });
+
+    it('no pide repartidor a OpenDSP si la tienda entrega por su cuenta', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({ ...prepaid, paymentStatus: 'PAID', storeId: 'own-store' });
+      mockPrisma.store.findUnique.mockResolvedValue({ id: 'own-store', openDspEnabled: false });
+      await expect(service.dispatchNow('VT-2')).rejects.toThrow('propios repartidores');
+      expect(mockDspService.dispatchOrder).not.toHaveBeenCalled();
+    });
   });
 
   describe('updateStatus & Webhook (TC-ORD-002 & TC-DSP-005)', () => {
@@ -245,6 +289,27 @@ describe('OrdersService', () => {
       });
 
       expect(res.status).toBe('DELIVERED');
+    });
+
+    it('guarda el repartidor y el link de rastreo que manda OpenDSP y avisa al cliente', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({ id: 'ord-1', orderNumber: 'VT-9', userId: 'u1', status: 'DSP_DISPATCHED', dspDriverName: null });
+      mockPrisma.order.update.mockResolvedValue({ id: 'ord-1', orderNumber: 'VT-9', userId: 'u1', dspDriverName: 'Alex' });
+      await service.handleDspWebhook({
+        event: 'order.assigned',
+        data: { order_id: 'core-1', merchant_reference: 'VT-9', status: 'ASSIGNED', driver: { name: 'Alex', phone: '+591 70001234' }, tracking_url: 'http://localhost:5173/track/abc' },
+      });
+      expect(mockPrisma.order.update.mock.calls[0][0].data).toEqual(
+        expect.objectContaining({ dspDriverName: 'Alex', dspTrackingUrl: 'http://localhost:5173/track/abc' }),
+      );
+      expect(mockNotifications.notifyOrder).toHaveBeenCalledWith(expect.anything(), 'DRIVER_ASSIGNED');
+    });
+
+    it('al entregar un pedido contraentrega lo marca como cobrado', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({ id: 'ord-1', orderNumber: 'VT-9', status: 'IN_TRANSIT', paymentMethod: 'CASH_ON_DELIVERY', paymentStatus: 'PENDING', items: [] });
+      mockPrisma.order.update.mockResolvedValue({ id: 'ord-1', status: 'DELIVERED' });
+      await service.updateStatus('ord-1', 'DELIVERED');
+      expect(mockPrisma.order.update.mock.calls[0][0].data.paymentStatus).toBe('PAID');
+      expect(mockNotifications.notifyOrder).toHaveBeenCalledWith(expect.anything(), 'DELIVERED');
     });
   });
 });

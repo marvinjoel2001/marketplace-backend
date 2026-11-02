@@ -8,9 +8,10 @@ import { AdminGuard } from './admin.guard';
 import { AuthModule } from '../auth/auth.module';
 import { OrdersModule } from '../orders/orders.module';
 import { ProductsModule } from '../products/products.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [AuthModule, OrdersModule, ProductsModule],
+  imports: [AuthModule, OrdersModule, ProductsModule, NotificationsModule],
   controllers: [AdminController, AdminAuthController],
   providers: [AdminService, AdminInsightsService, AdminAuthService, AdminGuard],
   exports: [AdminService, AdminAuthService],

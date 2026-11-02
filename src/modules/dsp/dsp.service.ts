@@ -36,12 +36,17 @@ export interface DSPOrderRequest {
   storeLng: number;
   totalAmount: number;
   paymentMethod: string;
+  /** Already paid online: the driver must not collect anything. */
+  paid?: boolean;
+  /** Start of the delivery window the customer chose, and its label ("10:00 - 11:00"). */
+  deliveryAt?: Date | null;
+  deliveryWindow?: string | null;
 }
 
 export interface DSPOrderResponse {
   dspOrderId: string;
   trackingToken: string;
-  trackingUrl: string;
+  trackingUrl: string | null;
   status: string;
   driver?: {
     name: string;
@@ -131,7 +136,8 @@ export class DspService {
     }
   }
 
-  async dispatchOrder(params: DSPOrderRequest): Promise<DSPOrderResponse> {
+  /** Creates the delivery in OpenDSP Core. Returns null when Core is unreachable or rejects it, so the caller retries. */
+  async dispatchOrder(params: DSPOrderRequest): Promise<DSPOrderResponse | null> {
     try {
       const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.quoteId);
 
@@ -143,7 +149,15 @@ export class DspService {
         dropoffAddress: params.customerAddress || 'Domicilio del Cliente',
         dropoffLat: params.customerLat,
         dropoffLng: params.customerLng,
-        packageNotes: `Cliente: ${params.customerName} (${params.customerPhone}) | Pedido #${params.orderNumber} | Pago: ${params.paymentMethod} | Monto: Bs. ${params.totalAmount}`,
+        packageNotes: [
+          params.deliveryAt && `ENTREGAR ${promisedLabel(params.deliveryAt, params.deliveryWindow)}`,
+          `Cliente: ${params.customerName} (${params.customerPhone})`,
+          `Pedido #${params.orderNumber}`,
+          `Pago: ${params.paid ? 'YA PAGADO, NO COBRAR' : PAYMENT_LABELS[params.paymentMethod] || params.paymentMethod}`,
+          `Monto: Bs. ${params.totalAmount}`,
+        ]
+          .filter(Boolean)
+          .join(' | '),
         vehicleType: 'MOTORCYCLE',
       };
 
@@ -164,47 +178,35 @@ export class DspService {
 
       if (response.ok) {
         const data = await response.json();
+        // The driver is assigned later by Core and reported through the order.assigned webhook.
         return {
           dspOrderId: data.id || data.orderId,
-          trackingToken: data.trackingToken || `trk_${Date.now()}`,
-          trackingUrl: `/order/track/${params.orderNumber}`,
-          status: data.status || 'SEARCHING_DRIVER',
-          driver: data.driver ? {
-            name: data.driver.fullName || data.driver.name || 'Conductor OpenDSP',
-            phone: data.driver.phone || '+591 70001234',
-            rating: data.driver.rating || 4.9,
-            vehiclePlate: data.driver.vehiclePlate || 'Moto Asignada',
-            photoUrl: data.driver.photoUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-          } : undefined,
-          estimatedMinutes: 20,
+          trackingToken: data.trackingToken,
+          trackingUrl: trackingPage(data.trackingToken),
+          status: data.status || 'CREATED',
+          driver: data.driver
+            ? {
+                name: data.driver.fullName || data.driver.name,
+                phone: data.driver.phone,
+                rating: data.driver.rating,
+                vehiclePlate: data.driver.vehiclePlate,
+                photoUrl: data.driver.photoUrl,
+              }
+            : undefined,
+          estimatedMinutes: data.estimatedMinutes ?? 20,
         };
-      } else {
-        const errText = await response.text();
-        this.logger.warn(`OpenDSP Dispatch HTTP ${response.status}: ${errText}`);
       }
+      this.logger.warn(`OpenDSP rechazó el pedido #${params.orderNumber}: HTTP ${response.status} ${await response.text()}`);
     } catch (err: any) {
-      this.logger.debug(`OpenDSP Core directo fuera de línea (${err.message}). Usando asignación resiliente.`);
+      this.logger.warn(`OpenDSP Core no disponible para el pedido #${params.orderNumber} (${err.message}). Se reintentará.`);
     }
-
-    return {
-      dspOrderId: `dsp_ord_${Date.now()}`,
-      trackingToken: `trk_tok_${Math.random().toString(36).substring(2, 9)}`,
-      trackingUrl: `/order/track/${params.orderNumber}`,
-      status: 'ASSIGNED',
-      driver: {
-        name: 'Carlos Mendoza',
-        phone: '+591 77012345',
-        rating: 4.9,
-        vehiclePlate: '4829-KPL (Honda Navi Roja)',
-        photoUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
-      },
-      estimatedMinutes: 18,
-    };
+    return null;
   }
 
+  /** Live tracking from Core, or null when it is not available (never an invented driver). */
   async getTracking(trackingToken: string) {
     try {
-      const response = await fetch(`${this.dspApiUrl}/orders/track/${trackingToken}`, {
+      const response = await fetch(`${this.dspApiUrl}/orders/track/${encodeURIComponent(trackingToken)}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -218,20 +220,24 @@ export class DspService {
     } catch (err: any) {
       this.logger.debug(`Telemetría OpenDSP Core no disponible (${err.message}).`);
     }
-
-    return {
-      trackingToken,
-      status: 'IN_TRANSIT',
-      driver: {
-        fullName: 'Carlos Mendoza',
-        phone: '+591 77012345',
-        vehicleType: 'MOTORCYCLE',
-        vehiclePlate: '4829-KPL',
-        currentLat: -17.7725,
-        currentLng: -63.1895,
-        rating: 4.9,
-      },
-    };
+    return null;
   }
 }
 
+/** Public OpenDSP page where the customer follows the driver (dsp-admin-portal /track/:token). */
+function trackingPage(token?: string) {
+  const base = process.env.DSP_TRACKING_BASE_URL;
+  return base && token ? `${base.replace(/\/+$/, '')}/track/${token}` : null;
+}
+
+const PAYMENT_LABELS: Record<string, string> = {
+  CASH_ON_DELIVERY: 'COBRAR EN EFECTIVO',
+  QR_ON_DELIVERY: 'COBRAR CON QR',
+};
+
+/** "sáb 2 nov, 10:00 - 11:00" in Bolivia time, so the driver sees the promised window. */
+function promisedLabel(at: Date, window?: string | null) {
+  const day = new Date(at).toLocaleDateString('es-BO', { timeZone: 'America/La_Paz', weekday: 'short', day: 'numeric', month: 'short' });
+  const time = window || new Date(at).toLocaleTimeString('es-BO', { timeZone: 'America/La_Paz', hour: '2-digit', minute: '2-digit' });
+  return `${day}, ${time}`;
+}

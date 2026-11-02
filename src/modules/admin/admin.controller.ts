@@ -67,6 +67,12 @@ export class AdminController {
     return this.orders.updateStatus(id, status);
   }
 
+  /** Sends the order to OpenDSP Core right away instead of waiting for its delivery window. */
+  @Post('orders/:id/dispatch')
+  dispatchOrder(@Param('id') id: string) {
+    return this.orders.dispatchNow(id);
+  }
+
   @Get('shipments')
   shipments(@Query('from') from?: string, @Query('to') to?: string) {
     return this.insights.shipments(from, to);

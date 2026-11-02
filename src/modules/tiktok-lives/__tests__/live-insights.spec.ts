@@ -124,11 +124,11 @@ describe('clasificador ampliado', () => {
       ).isSelling,
     ).toBe(true);
   });
-  it('sigue aceptando cuentas comerciales por nombre o bio', () => {
+  it('una cuenta comercial con un live sin señal de venta no se lista', () => {
     expect(
       classifier.classify(live('Bienvenidos 🤗', { nickname: 'Reusa Store' }))
         .isSelling,
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -202,9 +202,12 @@ describe('tiendas reconocidas por el nombre de la cuenta', () => {
     ['essence_closet_', 'Ropa'],
     ['yokitoys1', 'Juguetes'],
     ['muebleriadelproveedor', 'Hogar'],
-  ])('@%s vende (%s) aunque el live no tenga título', (username, category) => {
+  ])('@%s da la categoría (%s), pero sin señal en el live no se lista', (username, category) => {
     expect(
       anyRegion.classify(live('Bienvenidos', { username })),
+    ).toMatchObject({ isSelling: false, category });
+    expect(
+      anyRegion.classify(live('Remate hoy', { username })),
     ).toMatchObject({ isSelling: true, category });
   });
   it.each([
@@ -225,7 +228,7 @@ describe('tiendas reconocidas por el nombre de la cuenta', () => {
       'bc.store.bo',
       'moda.bol',
     ])
-      expect(strict.classify(live('Bienvenidos', { username }))).toMatchObject({
+      expect(strict.classify(live('Remate hoy', { username }))).toMatchObject({
         listable: true,
         geoEvidence: 'username:bo',
       });

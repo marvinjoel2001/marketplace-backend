@@ -99,11 +99,9 @@ describe('clasificación con señales', () => {
     const result = classifier.classify(live('Hola'), false, signals({ chatSelling: true, chatRoomId: '7450012345678901234' }));
     expect(result).toMatchObject({ isSelling: true, salesEvidence: 'chat' });
   });
-  it('los videos de la cuenta cuentan, salvo en gaming o música', () => {
-    expect(classifier.classify(live('Hola'), false, signals({ videoSelling: true }))).toMatchObject({
-      isSelling: true,
-      salesEvidence: 'videos',
-    });
+  it('los videos de la cuenta o el chat de otra sala no bastan: el live actual debe mostrar la venta', () => {
+    expect(classifier.classify(live('Hola'), false, signals({ videoSelling: true })).isSelling).toBe(false);
+    expect(classifier.classify(live('Hola'), false, signals({ chatSelling: true, chatRoomId: 'otra-sala' })).isSelling).toBe(false);
     expect(classifier.classify(live('Free Fire con amigos'), false, signals({ videoSelling: true })).isSelling).toBe(false);
   });
 });
@@ -165,10 +163,11 @@ describe('SellerSignalsService', () => {
     expect(service.pending).toBe(0);
   });
 
-  it('promueve por los videos aunque el chat no se pueda abrir', async () => {
-    const { service } = setup({ captions: ['Remate de zapatos', 'Ofertas en vivo hoy'] }, null);
+  it('los videos de venta no promueven un live sin señal propia', async () => {
+    const { service, lives } = setup({ captions: ['Remate de zapatos', 'Ofertas en vivo hoy'] }, null);
     service.enqueue([live('Hola')]);
-    expect((await service.inspect()).length).toBe(1);
+    expect(await service.inspect()).toEqual([]);
+    expect(lives.recordVideoSignal).toHaveBeenCalledWith('maria.perez', true, expect.any(Array));
   });
 
   it('deja fuera un live sin señales y no lo vuelve a revisar', async () => {

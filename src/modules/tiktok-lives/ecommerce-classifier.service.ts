@@ -298,13 +298,6 @@ const CATEGORY_TERMS: [LiveCategory, string[]][] = [
     ],
   ],
 ];
-/**
- * Shop words as they appear glued inside usernames ("importadora_ramos_", "fardospormayorkoreanos",
- * "nezztienda"). Matched as substrings of the username without separators; "chic" is left out
- * because "chica" is a common personal handle, and "ropa" skips "europa".
- */
-const USERNAME_SHOP =
-  /tienda|store|shop|boutique|closet|import|fardo|cosmetic|perfum|juguet|joya|accesori|emprend|distribuidora|comercial|muebl|fajas|lenceria|(?<!eu)ropa|outfit|uftit|fashion|beauty|nails|skincare|makeup|maquillaje|pormayor|xmayor|ventas?(?!n)|vendo|remate|textil|decor|bazar|outlet|calzado|zapat|cartera|bolsos|ofertas|compritas|galeria|kids|toys|moda(?!l)/;
 /** Category fallback from glued username words, used when title/bio don't name one. */
 const USERNAME_CATEGORY: [LiveCategory, RegExp][] = [
   ['Ropa', /fardo|closet|boutique|(?<!eu)ropa|outfit|uftit|fashion|lenceria|fajas|calzado|zapat|moda(?!l)|jeans/],
@@ -341,7 +334,7 @@ export class EcommerceClassifier {
   /**
    * `signals`: evidence gathered outside the title. Chat in this same room counts like the title
    * (it describes this broadcast); video captions or an older room's chat describe the account,
-   * like its bio, so they don't turn a gaming/music live into a sale.
+   * like its bio, so they never make a live a sale on their own.
    */
   classify(live: LiveCandidate, registeredLocalStore = false, signals?: SellerSignals | null) {
     const text = normalizeText(
@@ -361,7 +354,6 @@ export class EcommerceClassifier {
     const localUsername = this.config.country === 'BO' &&
       USERNAME_BO.test(live.username);
     const gluedUsername = live.username.replace(/[._\d]/g, '');
-    const shopUsername = USERNAME_SHOP.test(gluedUsername);
     // Sellers post their order number far more often than the word "Bolivia".
     const localPhone =
       this.config.country === 'BO' &&
@@ -391,21 +383,20 @@ export class EcommerceClassifier {
       SALES_EMOJI.test(live.title);
     const chatThisRoom =
       !!signals?.chatSelling && !!live.roomId && signals.chatRoomId === live.roomId;
-    const accountSignal = !!signals?.videoSelling || !!signals?.chatSelling;
+    // Only this broadcast counts: an account that sells (name, bio, old videos or another room's chat)
+    // may be gaming, chatting or abroad right now. Vitrina's own registered stores are the exception.
     const isSelling =
       strongKeywords.length > 0 ||
       titleOffer ||
       chatThisRoom ||
-      ((matchedKeywords.length > 0 || shopUsername || accountSignal) && !nonSales);
+      (registeredLocalStore && !nonSales);
     const salesEvidence = strongKeywords.length > 0 || titleOffer
       ? 'title'
       : chatThisRoom
         ? 'chat'
-        : matchedKeywords.length > 0 || shopUsername
+        : isSelling
           ? 'account'
-          : accountSignal && !nonSales
-            ? signals?.videoSelling ? 'videos' : 'chat'
-            : null;
+          : null;
     // Most matched terms wins, so "faldas y carteras" isn't decided by list order alone.
     const categoryScores = CATEGORY_TERMS.map(
       ([name, terms]) =>
@@ -417,7 +408,7 @@ export class EcommerceClassifier {
     )?.[0];
     return {
       isSelling,
-      /** Where the sale was seen: title, chat, account (name/bio/username) or videos. */
+      /** Where the sale was seen: title, this room's chat, or account (a registered Vitrina store). */
       salesEvidence,
       /** Gaming/music/talk stream: not worth sampling its chat or videos. */
       nonSales,

@@ -85,7 +85,7 @@ export class TikTokLivesConfig {
   }
   /** Undecided accounts whose recent videos are read per minute to find sales words (0 disables). */
   get profileChecksPerCycle(): number {
-    return this.integer('TIKTOK_PROFILE_CHECKS_PER_CYCLE', 8, 0, 30);
+    return this.integer('TIKTOK_PROFILE_CHECKS_PER_CYCLE', 0, 0, 30);
   }
   /** Undecided lives whose chat is sampled per minute for "mío", "precio", "cuánto"… (0 disables). */
   get chatSamplesPerCycle(): number {

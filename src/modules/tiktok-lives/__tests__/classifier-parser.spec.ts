@@ -49,14 +49,19 @@ describe('EcommerceClassifier', () => {
       geoEvidence: null,
     });
   });
-  it('detecta ventas en el nombre y descripción aunque el directo tenga título genérico', () => {
+  it('el nombre y la descripción no bastan si el directo tiene un título genérico', () => {
     expect(classifier.classify({
       ...live('Holis'), nickname: 'AURA COSMÉTICOS', bio: 'Envíos Bolivia',
-    })).toMatchObject({ isSelling: true, category: 'Belleza', listable: true });
+    })).toMatchObject({ isSelling: false, category: 'Belleza', listable: false });
     expect(classifier.classify({ ...live('Hola'), nickname: 'DJ local', bio: 'Música' }).isSelling).toBe(false);
   });
-  it('reconoce nombres comerciales escritos con letras Unicode decorativas', () => {
-    expect(classifier.classify({ ...live('Hola'), nickname: '𝗥𝗢𝗣𝗔 🇧🇴' })).toMatchObject({ isSelling: true, listable: true });
+  it('una tienda registrada en Vitrina vende aunque el título sea genérico', () => {
+    expect(classifier.classify({ ...live('Holis'), nickname: 'AURA COSMÉTICOS' }, true)).toMatchObject({
+      isSelling: true, salesEvidence: 'account', listable: true,
+    });
+  });
+  it('reconoce títulos de venta escritos con letras Unicode decorativas', () => {
+    expect(classifier.classify({ ...live('𝗥𝗢𝗣𝗔 🇧🇴') })).toMatchObject({ isSelling: true, listable: true });
   });
   it('rechaza un país explícitamente distinto aunque el título diga Bolivia', () => {
     expect(

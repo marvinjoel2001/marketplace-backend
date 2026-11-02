@@ -21,13 +21,37 @@ export interface WhatsAppSettings {
 }
 
 /** Models the admin can pick for reading product photos; the first is the default. */
-export const VISION_MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'] as const;
+export const VISION_MODELS = [
+  'claude-opus-5-5',
+  'claude-sonnet-5-5',
+  'claude-haiku-5-5',
+  'deepseek-ai/deepseek-v4.1-flash-1017',
+] as const;
 export type VisionModel = (typeof VISION_MODELS)[number];
+
+/** Who serves each model: Anthropic directly, or Deploy (deploy.com) through its OpenAI-compatible API. */
+export type VisionProvider = 'anthropic' | 'deploy';
+export const visionProvider = (model: VisionModel): VisionProvider => (model.startsWith('claude-') ? 'anthropic' : 'deploy');
+
+/** Env var used until a key for that provider is saved from /admin. */
+export const VISION_KEY_ENV: Record<VisionProvider, string> = { anthropic: 'ANTHROPIC_API_KEY', deploy: 'DEPLOY_API_KEY' };
 
 export interface VisionAiSettings {
   enabled: boolean;
-  apiKey: string;
   model: VisionModel;
+  provider: VisionProvider;
+  /** Key of the selected model's provider. */
+  apiKey: string;
+  /** Every provider's key, so switching models never loses the other one. */
+  keys: Record<VisionProvider, string>;
+}
+
+/** What is stored: Anthropic's key keeps its original field name. */
+interface StoredVisionAi {
+  enabled?: boolean;
+  model?: string;
+  apiKey?: string;
+  deployApiKey?: string;
 }
 
 const KEYS = { shipping: 'shipping', whatsapp: 'whatsapp', visionAi: 'vision_ai', secret: 'token_secret', notificationsSeen: 'admin_notifications_seen_at' } as const;
@@ -94,23 +118,31 @@ export class SettingsService {
     return next;
   }
 
-  /** Anthropic key and model that recognise product photos. ANTHROPIC_API_KEY is used until a key is saved from /admin. */
+  /** Model and keys that recognise product photos. ANTHROPIC_API_KEY / DEPLOY_API_KEY are used until a key is saved from /admin. */
   async getVisionAi(): Promise<VisionAiSettings> {
-    const saved = (await this.get<Partial<VisionAiSettings>>(KEYS.visionAi)) ?? {};
-    return {
-      enabled: saved.enabled ?? true,
-      apiKey: saved.apiKey || process.env.ANTHROPIC_API_KEY || '',
-      model: VISION_MODELS.includes(saved.model as VisionModel) ? (saved.model as VisionModel) : VISION_MODELS[0],
+    const saved = (await this.get<StoredVisionAi>(KEYS.visionAi)) ?? {};
+    const model = VISION_MODELS.includes(saved.model as VisionModel) ? (saved.model as VisionModel) : VISION_MODELS[0];
+    const keys: Record<VisionProvider, string> = {
+      anthropic: saved.apiKey || process.env.ANTHROPIC_API_KEY || '',
+      deploy: saved.deployApiKey || process.env.DEPLOY_API_KEY || '',
     };
+    const provider = visionProvider(model);
+    return { enabled: saved.enabled ?? true, model, provider, apiKey: keys[provider], keys };
   }
 
-  async setVisionAi(input: Partial<VisionAiSettings> & { removeKey?: boolean }): Promise<VisionAiSettings> {
-    const saved = (await this.get<Partial<VisionAiSettings>>(KEYS.visionAi)) ?? {};
-    const next: Partial<VisionAiSettings> = {
+  /** The key in the form (and removeKey) apply to the provider of the model being saved. */
+  async setVisionAi(input: { enabled?: boolean; model?: string; apiKey?: string; removeKey?: boolean }): Promise<VisionAiSettings> {
+    const saved = (await this.get<StoredVisionAi>(KEYS.visionAi)) ?? {};
+    const model = VISION_MODELS.includes(input.model as VisionModel)
+      ? (input.model as VisionModel)
+      : VISION_MODELS.includes(saved.model as VisionModel) ? (saved.model as VisionModel) : VISION_MODELS[0];
+    const field = visionProvider(model) === 'anthropic' ? 'apiKey' : 'deployApiKey';
+    const next: StoredVisionAi = {
+      ...saved,
       enabled: input.enabled === undefined ? saved.enabled ?? true : Boolean(input.enabled),
+      model,
       // An empty key from the form means "keep the one already saved".
-      apiKey: input.removeKey ? '' : input.apiKey?.trim() || saved.apiKey || '',
-      model: VISION_MODELS.includes(input.model as VisionModel) ? input.model : saved.model ?? VISION_MODELS[0],
+      [field]: input.removeKey ? '' : input.apiKey?.trim() || saved[field] || '',
     };
     await this.set(KEYS.visionAi, next);
     return this.getVisionAi();

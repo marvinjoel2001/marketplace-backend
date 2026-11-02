@@ -14,7 +14,9 @@ import {
 import { AdminService } from './admin.service';
 import { AdminInsightsService } from './admin-insights.service';
 import { AdminGuard } from './admin.guard';
-import { SettingsService, ShippingRates, VISION_MODELS, VisionAiSettings, WhatsAppSettings } from '../settings/settings.service';
+import {
+  SettingsService, ShippingRates, VISION_KEY_ENV, VISION_MODELS, VisionAiSettings, VisionProvider, WhatsAppSettings, visionProvider,
+} from '../settings/settings.service';
 import { PhotoAiService } from '../products/photo-ai.service';
 import { WhatsAppService } from '../auth/whatsapp.service';
 import { OrdersService } from '../orders/orders.service';
@@ -135,7 +137,7 @@ export class AdminController {
   }
 
   @Put('vision-ai')
-  async setVisionAi(@Body() body: Partial<VisionAiSettings> & { removeKey?: boolean }) {
+  async setVisionAi(@Body() body: { enabled?: boolean; model?: string; apiKey?: string; removeKey?: boolean }) {
     return visionView(await this.settings.setVisionAi(body ?? {}));
   }
 
@@ -265,12 +267,19 @@ export class AdminController {
 }
 
 function visionView(cfg: VisionAiSettings) {
+  const keyView = (provider: VisionProvider) => {
+    const key = cfg.keys[provider];
+    const env = process.env[VISION_KEY_ENV[provider]];
+    return { hasApiKey: Boolean(key), keyHint: key ? `…${key.slice(-4)}` : '', fromEnv: Boolean(env) && key === env };
+  };
   return {
     enabled: cfg.enabled,
     model: cfg.model,
     models: VISION_MODELS,
-    hasApiKey: Boolean(cfg.apiKey),
-    keyHint: cfg.apiKey ? `…${cfg.apiKey.slice(-4)}` : '',
-    fromEnv: Boolean(process.env.ANTHROPIC_API_KEY) && cfg.apiKey === process.env.ANTHROPIC_API_KEY,
+    provider: cfg.provider,
+    // Which provider serves each model, so the form shows the right key field before saving.
+    modelProviders: Object.fromEntries(VISION_MODELS.map((m) => [m, visionProvider(m)])),
+    providers: { anthropic: keyView('anthropic'), deploy: keyView('deploy') },
+    ...keyView(cfg.provider),
   };
 }

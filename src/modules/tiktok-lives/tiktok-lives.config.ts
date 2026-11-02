@@ -83,6 +83,22 @@ export class TikTokLivesConfig {
   get verifyConcurrency(): number {
     return this.integer('TIKTOK_VERIFY_CONCURRENCY', 5, 1, 10);
   }
+  /** Undecided accounts whose recent videos are read per minute to find sales words (0 disables). */
+  get profileChecksPerCycle(): number {
+    return this.integer('TIKTOK_PROFILE_CHECKS_PER_CYCLE', 8, 0, 30);
+  }
+  /** Undecided lives whose chat is sampled per minute for "mío", "precio", "cuánto"… (0 disables). */
+  get chatSamplesPerCycle(): number {
+    return this.integer('TIKTOK_CHAT_SAMPLES_PER_CYCLE', 6, 0, 20);
+  }
+  /** How long each live's chat is listened to before deciding. */
+  get chatSampleSeconds(): number {
+    return this.integer('TIKTOK_CHAT_SAMPLE_SECONDS', 45, 15, 120);
+  }
+  /** Buyer comments ("mío", "precio?", "talla M") from at least two people that mark a live as selling. */
+  get chatMinBuyerComments(): number {
+    return this.integer('TIKTOK_CHAT_MIN_BUYER_COMMENTS', 3, 2, 20);
+  }
   get maxCandidates(): number {
     return this.integer('TIKTOK_MAX_CANDIDATES', 200, 1, 500);
   }

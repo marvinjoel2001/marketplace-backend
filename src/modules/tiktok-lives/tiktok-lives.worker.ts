@@ -9,6 +9,7 @@ import { TikTokLivesConfig } from './tiktok-lives.config';
 import { TikTokLivesService } from './tiktok-lives.service';
 import { discoveryFailureDetails, discoveryFailureReason } from './tiktok-discovery-error';
 import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
+import { SellerSignalsService } from './seller-signals.service';
 import {
   LiveCandidate,
   normalizeUsername,
@@ -32,6 +33,7 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
   private probeFailures = 0;
   private probeSuccesses = 0;
   private stopping = false;
+  private inspecting = false;
   constructor(
     private readonly prisma: PrismaService,
     private readonly discovery: TikTokDiscoveryService,
@@ -40,6 +42,7 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
     private readonly lives: TikTokLivesService,
     private readonly cache: TikTokLiveCache,
     private readonly config: TikTokLivesConfig,
+    private readonly signals: SellerSignalsService,
     private readonly health: TikTokDiscoveryHealth = new TikTokDiscoveryHealth(),
   ) {}
 
@@ -59,10 +62,22 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
       try {
         const candidates = await this.discovery.discover(await this.seeds());
         this.retry.success('discovery');
-        const selling = candidates.filter(
-          // Regional data often appears only in full room info. Do not reject
-          // a seller before that enrichment; saveVerified applies the final filter.
-          (live) => this.classifier.classify(live).isSelling,
+        // Video captions and chat already checked for these accounts count as selling evidence.
+        const known = await this.lives.signalsFor(candidates.map((live) => live.username));
+        const verdicts = candidates.map((live) => ({
+          live,
+          verdict: this.classifier.classify(live, false, known.get(live.username)),
+        }));
+        // Regional data often appears only in full room info. Do not reject
+        // a seller before that enrichment; saveVerified applies the final filter.
+        const selling = verdicts.filter(({ verdict }) => verdict.isSelling).map(({ live }) => live);
+        // Neither clearly selling nor gaming/music: look at their videos and chat (inspectSignals).
+        this.signals.enqueue(
+          verdicts
+            .filter(({ live, verdict }) =>
+              !verdict.isSelling && !verdict.nonSales &&
+              (!live.countryCode || live.countryCode.toUpperCase() === this.config.country))
+            .map(({ live }) => live),
         );
         await this.each(selling, owned, (live) =>
           live.roomId
@@ -71,7 +86,7 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
         );
         this.health.success();
         this.logger.log(
-          `Exploración TikTok: ${candidates.length} candidatos, ${selling.length} vendedores revisados${this.config.requireRegion ? ' con filtro regional' : ''}`,
+          `Exploración TikTok: ${candidates.length} candidatos, ${selling.length} vendedores revisados, ${this.signals.pending} por revisar en videos/chat${this.config.requireRegion ? ' con filtro regional' : ''}`,
         );
       } catch (error) {
         this.health.fail();
@@ -81,6 +96,31 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
         );
       }
     });
+  }
+
+  /**
+   * Lives whose title doesn't show a sale get a second look: the account's recent videos and a
+   * short listen to the chat ("mío", "precio", "cuánto"). The ones that sell are verified as usual.
+   * Runs where discovery ran (the queue lives in this process), so it needs no shared lease.
+   */
+  @Interval(60000)
+  async inspectSignals(): Promise<void> {
+    if (!this.config.enabled || this.stopping || this.inspecting || !this.signals.pending) return;
+    this.inspecting = true;
+    try {
+      const owned = () => !this.stopping;
+      const found = await this.signals.inspect(owned);
+      await this.each(found, owned, ({ live, seenAt }) =>
+        // A recent feed sighting still proves the room is live; older ones get an HTTP probe.
+        live.roomId && Date.now() - seenAt < REVERIFY_AFTER_SECONDS * 1000
+          ? this.trustSighting(live, owned)
+          : this.verify(live.username, live, undefined, owned),
+      );
+    } catch {
+      this.logger.warn('No se pudieron revisar videos/chat de los lives pendientes');
+    } finally {
+      this.inspecting = false;
+    }
   }
 
   /** Opens the TikTok sign-in window; once signed in, explores that account's feed right away. */

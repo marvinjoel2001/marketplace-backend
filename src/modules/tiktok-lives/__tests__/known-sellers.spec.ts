@@ -23,6 +23,7 @@ describe('re-verificación de vendedores conocidos', () => {
       {} as any,
       cache as any,
       { enabled: true, verifyConcurrency: 2, ...config } as any,
+      {} as any,
     );
     const verify = jest
       .spyOn(worker as any, 'verify')
@@ -72,6 +73,7 @@ describe('semillas para la bola de nieve', () => {
       {} as any,
       {} as any,
       { snowballPerCycle: 2 } as any,
+      {} as any,
     );
     const seeds = () => (worker as any).seeds();
     expect(await seeds()).toEqual(['a', 'b']);
@@ -83,6 +85,7 @@ describe('semillas para la bola de nieve', () => {
     const worker = new TikTokLivesWorker(
       prisma as any, {} as any, {} as any, {} as any, {} as any, {} as any,
       { snowballPerCycle: 0 } as any,
+      {} as any,
     );
     expect(await (worker as any).seeds()).toEqual([]);
     expect(prisma.tikTokLive.findMany).not.toHaveBeenCalled();

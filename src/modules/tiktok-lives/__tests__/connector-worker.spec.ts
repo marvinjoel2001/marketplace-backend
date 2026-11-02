@@ -206,6 +206,7 @@ describe('TikTok worker freshness and failure handling', () => {
     lives = {
       saveVerified: jest.fn().mockResolvedValue({}),
       markEnded: jest.fn(),
+      signalsFor: jest.fn().mockResolvedValue(new Map()),
     };
     prisma = {
       tikTokAccount: {
@@ -235,6 +236,7 @@ describe('TikTok worker freshness and failure handling', () => {
       lives,
       cache,
       config,
+      { enqueue: jest.fn(), pending: 0 } as any,
     );
   });
   it('no ejecuta trabajos de red cuando está deshabilitado', async () => {

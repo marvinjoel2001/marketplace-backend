@@ -13,6 +13,7 @@ import {
   extractWhatsApp,
   salesScore,
 } from './live-insights';
+import type { SellerSignals } from './seller-signals';
 import { TikTokLiveCache } from './tiktok-live-cache.service';
 import { TikTokLivesConfig } from './tiktok-lives.config';
 import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
@@ -27,6 +28,19 @@ import {
   normalizeUsername,
   viewerCount,
 } from './tiktok-lives.types';
+
+/** Neighbouring cities: a visitor in La Paz also wants El Alto first (and vice versa). */
+const NEIGHBOURS: Record<string, string[]> = {
+  'La Paz': ['El Alto'],
+  'El Alto': ['La Paz'],
+};
+
+/** 2 = the visitor's city, 1 = a neighbouring one, 0 = elsewhere or unknown. */
+function nearness(city: string | null, near: string | undefined): number {
+  if (!near || !city) return 0;
+  if (city === near) return 2;
+  return NEIGHBOURS[near]?.includes(city) ? 1 : 0;
+}
 
 @Injectable()
 export class TikTokLivesService {
@@ -43,6 +57,7 @@ export class TikTokLivesService {
     limit?: string;
     category?: string;
     city?: string;
+    near?: string;
   }) {
     const page = this.pageNumber(query.page, 1, 10000);
     const limit = this.pageNumber(query.limit, 20, 100);
@@ -66,6 +81,11 @@ export class TikTokLivesService {
         : CITIES.find((c) => normalizeText(c) === normalizeText(query.city));
     if (query.city !== undefined && !city)
       throw new BadRequestException(`Ciudad inválida: ${CITIES.join(', ')}`);
+    // The visitor's city (from their IP or their choice) only reorders: never hides the rest of the country.
+    const near =
+      typeof query.near === 'string'
+        ? CITIES.find((c) => normalizeText(c) === normalizeText(query.near))
+        : undefined;
     let lives = await this.cache.read();
     if (lives === null) {
       const version = await this.cache.version();
@@ -112,7 +132,9 @@ export class TikTokLivesService {
           b.sales_score - a.sales_score ||
           b.viewer_count - a.viewer_count ||
           a.username.localeCompare(b.username),
-      );
+      )
+      // Stable: within each distance tier the order above is kept.
+      .sort((a, b) => nearness(b.city, near) - nearness(a.city, near));
     return {
       data: filtered.slice((page - 1) * limit, page * limit),
       pagination: {
@@ -137,6 +159,8 @@ export class TikTokLivesService {
         server_time: new Date(now).toISOString(),
         country_code: this.config.country,
         cities,
+        near: near ?? null,
+        near_count: near ? filtered.filter((live) => nearness(live.city, near) === 2).length : 0,
       },
     };
   }
@@ -220,7 +244,8 @@ export class TikTokLivesService {
       localStore = account.countryCode === this.config.country;
     }
     // The administrative local-store registry is evidence, not proof of account ownership.
-    const classification = this.classifier.classify(live, !!localStore);
+    const signals = await this.signalsFor([username]);
+    const classification = this.classifier.classify(live, !!localStore, signals.get(username));
     if (!classification.listable) {
       await this.markEnded(username, live.roomId);
       return;
@@ -244,6 +269,14 @@ export class TikTokLivesService {
       storeId: store?.id ?? null,
       status: 'ACTIVE',
       verifiedAt: new Date(),
+      city: detectCity([
+        live.title,
+        ...live.tags,
+        username,
+        live.nickname ?? '',
+        live.bio ?? '',
+        classification.geoEvidence ?? '',
+      ]),
     };
     await this.prisma.tikTokLive.upsert({
       where: { username },
@@ -309,6 +342,63 @@ export class TikTokLivesService {
           }
         : null,
     };
+  }
+
+  /** Stored selling evidence (video captions, chat) for these accounts. */
+  async signalsFor(usernames: string[]): Promise<Map<string, SellerSignals>> {
+    const result = new Map<string, SellerSignals>();
+    if (!usernames.length) return result;
+    const rows = await this.prisma.tikTokSellerSignal.findMany({
+      where: { username: { in: [...new Set(usernames)] } },
+    });
+    for (const row of rows)
+      result.set(row.username, {
+        videoSelling: !!row.videoSelling,
+        chatSelling: !!row.chatSelling,
+        chatRoomId: row.chatRoomId,
+      });
+    return result;
+  }
+
+  /** When each account's videos/chat were last checked, to avoid re-checking them every cycle. */
+  async signalChecks(usernames: string[]) {
+    if (!usernames.length) return new Map<string, { videoCheckedAt: Date | null; chatRoomId: string | null; chatCheckedAt: Date | null }>();
+    const rows = await this.prisma.tikTokSellerSignal.findMany({
+      where: { username: { in: [...new Set(usernames)] } },
+      select: { username: true, videoCheckedAt: true, chatRoomId: true, chatCheckedAt: true },
+    });
+    return new Map(rows.map((row) => [row.username, row]));
+  }
+
+  async recordVideoSignal(username: string, selling: boolean, keywords: string[]): Promise<void> {
+    const data = {
+      videoSelling: selling,
+      videoKeywords: JSON.stringify(keywords.slice(0, 15)),
+      videoCheckedAt: new Date(),
+    };
+    await this.prisma.tikTokSellerSignal.upsert({
+      where: { username },
+      create: { username, ...data },
+      update: data,
+    });
+  }
+
+  async recordChatSignal(username: string, roomId: string, selling: boolean, hits: number): Promise<void> {
+    const existing = await this.prisma.tikTokSellerSignal.findUnique({ where: { username } });
+    // A quiet sample of a new room must not erase what an earlier room's chat proved.
+    if (!selling && existing?.chatSelling && existing.chatRoomId !== roomId) {
+      await this.prisma.tikTokSellerSignal.update({
+        where: { username },
+        data: { chatCheckedAt: new Date() },
+      });
+      return;
+    }
+    const data = { chatSelling: selling, chatRoomId: roomId, chatHits: hits, chatCheckedAt: new Date() };
+    await this.prisma.tikTokSellerSignal.upsert({
+      where: { username },
+      create: { username, ...data },
+      update: data,
+    });
   }
 
   async markEnded(username: string, roomId?: string): Promise<void> {
@@ -386,7 +476,7 @@ export class TikTokLivesService {
       store_id: row.storeId,
       verified_at: row.verifiedAt.toISOString(),
       live_url: `https://www.tiktok.com/@${row.username}/live`,
-      city: detectCity([row.title, ...tags, row.username, row.geoEvidence]),
+      city: row.city ?? detectCity([row.title, ...tags, row.username, row.geoEvidence]),
       price_text: price,
       whatsapp_url: whatsapp
         ? `https://wa.me/${whatsapp}?text=${encodeURIComponent('Hola! Te vi en tu LIVE de TikTok (Vitrina Market)')}`

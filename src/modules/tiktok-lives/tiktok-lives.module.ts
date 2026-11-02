@@ -11,6 +11,7 @@ import { TikTokLivesController } from './tiktok-lives.controller';
 import { TikTokSessionController } from './tiktok-session.controller';
 import { LiveFeedService } from './live-feed.service';
 import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
+import { SellerSignalsService } from './seller-signals.service';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
@@ -25,6 +26,7 @@ import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
     TikTokLivesService,
     TikTokLivesWorker,
     LiveFeedService,
+    SellerSignalsService,
   ],
   exports: [TikTokLivesService],
 })

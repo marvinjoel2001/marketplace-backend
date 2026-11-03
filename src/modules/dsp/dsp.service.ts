@@ -182,7 +182,8 @@ export class DspService {
         return {
           dspOrderId: data.id || data.orderId,
           trackingToken: data.trackingToken,
-          trackingUrl: trackingPage(data.trackingToken),
+          // Without DSP_TRACKING_BASE_URL, use the page Core itself reports.
+          trackingUrl: trackingPage(data.trackingToken) ?? data.tracking_url ?? null,
           status: data.status || 'CREATED',
           driver: data.driver
             ? {

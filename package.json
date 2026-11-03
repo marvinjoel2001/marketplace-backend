@@ -5,13 +5,13 @@
   "private": true,
   "license": "UNLICENSED",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.16.0"
   },
   "scripts": {
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
-    "start:prod": "node dist/main",
+    "start:prod": "node scripts/start-production.cjs",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:seed": "tsx prisma/seed.ts",
@@ -20,6 +20,7 @@
     "test:cov": "jest --coverage --runInBand --forceExit",
     "test:endpoints": "node test_all_endpoints.js",
     "test:tiktok": "jest --runInBand --testPathPattern=tiktok-lives",
+    "test:postgres-migration": "node scripts/test-postgres-migration.cjs",
     "tiktok:browser-smoke": "node scripts/tiktok-browser-smoke.cjs",
     "tiktok:sync": "node scripts/tiktok-sync.cjs"
   },

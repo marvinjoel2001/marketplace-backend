@@ -39,7 +39,12 @@ describe('TikTok LIVE API + SQLite integration (isolated database)', () => {
     folder = mkdtempSync(join(tmpdir(), 'vitrina-tiktok-test-'));
     const url = `file:${join(folder, 'test.db').replace(/\\/g, '/')}`;
     const schema = join(folder, 'schema.prisma');
-    writeFileSync(schema, readFileSync(resolve('prisma/schema.prisma')));
+    // Keep this isolated SQLite fixture independent of the PostgreSQL production client.
+    const clientPath = resolve('.cache/sqlite-test-client');
+    const fixtureSchema = readFileSync(resolve('prisma/schema.prisma'), 'utf8')
+      .replace('provider = "postgresql"', 'provider = "sqlite"')
+      .replace('generator client {', `generator client {\n  output = ${JSON.stringify(clientPath.replace(/\\/g, '/'))}`);
+    writeFileSync(schema, fixtureSchema);
     writeFileSync(join(folder, 'test.db'), '');
     execFileSync(
       process.execPath,
@@ -56,7 +61,11 @@ describe('TikTok LIVE API + SQLite integration (isolated database)', () => {
         stdio: 'pipe',
       },
     );
-    db = new PrismaClient({ datasources: { db: { url } } });
+    execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'generate', '--schema', schema], {
+      env: { ...process.env, DATABASE_URL: 'file:./test.db' }, stdio: 'pipe',
+    });
+    const { PrismaClient: SQLiteClient } = require(clientPath);
+    db = new SQLiteClient({ datasources: { db: { url } } });
     const sql = readFileSync(resolve('prisma/sql/tiktok-lives.sql'), 'utf8');
     // The additive SQL can safely be reapplied to an existing schema.
     for (const statement of sql.split(';').filter((s) => s.trim()))
@@ -88,7 +97,7 @@ describe('TikTok LIVE API + SQLite integration (isolated database)', () => {
         logo: 'https://example.com/logo.png',
       },
     });
-  }, 30000);
+  }, 60000);
 
   afterAll(async () => {
     await app?.close();

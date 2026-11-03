@@ -259,7 +259,7 @@ export class AdminInsightsService {
     if (range) where.deliveryAt = range;
     if (filter.q?.trim()) {
       const q = filter.q.trim();
-      where.OR = [{ orderNumber: { contains: q } }, { customerName: { contains: q } }, { customerPhone: { contains: q } }];
+      where.OR = [{ orderNumber: { contains: q, mode: 'insensitive' } }, { customerName: { contains: q, mode: 'insensitive' } }, { customerPhone: { contains: q, mode: 'insensitive' } }];
     }
     const [orders, stores] = await Promise.all([
       this.prisma.order.findMany({ where, include: { items: true }, orderBy: { createdAt: 'desc' }, take: 200 }),

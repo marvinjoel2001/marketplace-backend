@@ -25,7 +25,6 @@ ENV NODE_ENV=production
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chromium-nonroot
 ENV PORT=4000
-ENV DATABASE_URL="file:/app/prisma/dev.db"
 
 # Reuse the builder's node_modules: the pinned Prisma CLI (db push) and tsx (first-boot seed)
 # are devDependencies, and `npx prisma` would otherwise download an incompatible latest major.
@@ -42,5 +41,5 @@ USER node
 
 EXPOSE 4000
 
-# db push is additive for this schema; the seed only runs when the database has no categories.
-CMD ["sh", "-c", "npx prisma db push && node scripts/seed-if-empty.cjs && node dist/main.js"]
+# Apply reviewed PostgreSQL migrations, optionally import the legacy volume, then start the API.
+CMD ["node", "scripts/start-production.cjs"]

@@ -65,9 +65,9 @@ export class ProductsService {
 
     if (q) {
       whereClause.OR = [
-        { title: { contains: q } },
-        { description: { contains: q } },
-        { tags: { contains: q } },
+        { title: { contains: q, mode: 'insensitive' } },
+        { description: { contains: q, mode: 'insensitive' } },
+        { tags: { contains: q, mode: 'insensitive' } },
       ];
     }
 

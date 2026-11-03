@@ -9,3 +9,6 @@ yarn-error.log*
 .env
 .tiktok-profile
 public/uploads
+.cache
+prisma/*.db
+prisma/*.db-*

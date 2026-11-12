@@ -62,7 +62,8 @@ export interface DSPOrderResponse {
 export class DspService {
   private readonly logger = new Logger(DspService.name);
   private readonly dspApiUrl = process.env.DSP_API_URL || 'http://localhost:3000/v1';
-  private readonly dspApiKey = process.env.DSP_API_KEY || 'dsp_live_marketplace_bolivia_2026';
+  // The fallback is the key the local OpenDSP seed creates; deployments must set their own.
+  private readonly dspApiKey = process.env.DSP_API_KEY || (process.env.NODE_ENV === 'production' ? '' : 'dsp_live_marketplace_bolivia_2026');
 
   constructor(
     private readonly prisma: PrismaService,
@@ -214,10 +215,7 @@ export class DspService {
         },
         signal: AbortSignal.timeout(2000),
       });
-
-      if (response.ok) {
-        return await response.json();
-      }
+      if (response.ok) return await response.json();
     } catch (err: any) {
       this.logger.debug(`Telemetría OpenDSP Core no disponible (${err.message}).`);
     }

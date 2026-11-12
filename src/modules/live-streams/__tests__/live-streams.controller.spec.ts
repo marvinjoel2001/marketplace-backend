@@ -1,3 +1,4 @@
+import { PrismaService } from '../../../prisma/prisma.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { LiveStreamsController } from '../live-streams.controller';
 import { LiveStreamsService } from '../live-streams.service';
@@ -27,6 +28,9 @@ describe('LiveStreamsController', () => {
     ),
   };
 
+  const owner = { id: 'owner_1', role: 'VENDOR' };
+  const mockPrisma = { store: { findFirst: jest.fn().mockResolvedValue({ id: 'store_1', slug: 'store_1', ownerId: 'owner_1' }) } };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [LiveStreamsController],
@@ -35,6 +39,7 @@ describe('LiveStreamsController', () => {
           provide: LiveStreamsService,
           useValue: mockLiveStreamsService,
         },
+        { provide: PrismaService, useValue: mockPrisma },
       ],
     }).compile();
 
@@ -62,9 +67,13 @@ describe('LiveStreamsController', () => {
         title: 'Liquidación de Audífonos',
         tiktokUrl: 'https://www.tiktok.com/@techplus_bo/live',
       };
-      const result = await controller.create(dto);
+      const result = await controller.create(dto, owner);
       expect(result.id).toBe('live_new');
       expect(service.create).toHaveBeenCalledWith(dto);
     });
+  });
+
+  it('no deja transmitir en nombre de una tienda ajena', async () => {
+    await expect(controller.create({ storeId: 'store_1', title: 'x' }, { id: 'intruso', role: 'CUSTOMER' })).rejects.toThrow('no es tuya');
   });
 });

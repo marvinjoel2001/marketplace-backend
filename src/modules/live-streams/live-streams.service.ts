@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PUBLIC_STORE_SELECT } from '../stores/public-store';
 
 @Injectable()
 export class LiveStreamsService {
@@ -15,8 +16,10 @@ export class LiveStreamsService {
       where: whereClause,
       include: {
         store: {
-          include: {
+          select: {
+            ...PUBLIC_STORE_SELECT,
             offers: {
+              where: { isActive: true },
               take: 5,
               include: { product: true },
             },
@@ -52,16 +55,15 @@ export class LiveStreamsService {
         storeId,
         title,
         streamerName: streamerName || 'Presentador Oficial',
-        streamerAvatar: streamerAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-        viewerCount: Math.floor(Math.random() * 800) + 400,
-        likeCount: Math.floor(Math.random() * 3000) + 1000,
+        streamerAvatar: streamerAvatar || '',
+        // Real audience numbers come from TikTok (tiktok-lives); none are made up here.
+        viewerCount: 0,
+        likeCount: 0,
         status: 'LIVE',
         tiktokUrl,
         featuredProductIds: Array.isArray(featuredProductIds) ? featuredProductIds.join(',') : featuredProductIds || '',
       },
-      include: {
-        store: true,
-      },
+      include: { store: { select: PUBLIC_STORE_SELECT } },
     });
   }
 
@@ -69,7 +71,7 @@ export class LiveStreamsService {
     const stream = await this.prisma.liveStream.update({
       where: { id },
       data: { status: 'LIVE' },
-      include: { store: true },
+      include: { store: { select: PUBLIC_STORE_SELECT } },
     });
 
     if (stream.storeId) {
@@ -86,7 +88,7 @@ export class LiveStreamsService {
     const stream = await this.prisma.liveStream.update({
       where: { id },
       data: { status: 'ENDED' },
-      include: { store: true },
+      include: { store: { select: PUBLIC_STORE_SELECT } },
     });
 
     if (stream.storeId) {
@@ -103,7 +105,7 @@ export class LiveStreamsService {
     return this.prisma.liveStream.update({
       where: { id },
       data: { featuredProductIds: productId },
-      include: { store: true },
+      include: { store: { select: PUBLIC_STORE_SELECT } },
     });
   }
 }

@@ -12,6 +12,7 @@ describe('UploadService', () => {
     (fs.existsSync as jest.Mock).mockReturnValue(true);
     (fs.mkdirSync as jest.Mock).mockReturnValue(undefined);
     (fs.writeFileSync as jest.Mock).mockReturnValue(undefined);
+    Object.assign(fs, { promises: { mkdir: jest.fn().mockResolvedValue(undefined), writeFile: jest.fn().mockResolvedValue(undefined) } });
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [UploadService],
@@ -27,8 +28,7 @@ describe('UploadService', () => {
 
   describe('uploadSingle (TC-IMG-001 & TC-IMG-002)', () => {
     it('debería subir imagen válida en base64 exitosamente', async () => {
-      // 100 bytes dummy base64
-      const sampleBase64 = Buffer.from('fake image content').toString('base64');
+      const sampleBase64 = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32)]).toString('base64');
       const dataUri = `data:image/jpeg;base64,${sampleBase64}`;
 
       const result = await service.uploadSingle({
@@ -65,7 +65,7 @@ describe('UploadService', () => {
 
   describe('uploadBatch', () => {
     it('debería procesar múltiples imágenes', async () => {
-      const sampleBase64 = Buffer.from('img').toString('base64');
+      const sampleBase64 = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]).toString('base64');
       const dataUri = `data:image/png;base64,${sampleBase64}`;
 
       const result = await service.uploadBatch([
@@ -80,5 +80,21 @@ describe('UploadService', () => {
     it('debería fallar si array es vacío', async () => {
       await expect(service.uploadBatch([])).rejects.toThrow(BadRequestException);
     });
+  });
+
+  it('rechaza un archivo que dice ser imagen pero no lo es', async () => {
+    const fake = `data:image/png;base64,${Buffer.from('<script>alert(1)</script> padding padding').toString('base64')}`;
+    await expect(service.uploadSingle({ base64Data: fake })).rejects.toThrow('no es una imagen válida');
+  });
+
+  it('guarda una foto enviada como bytes (sin base64)', async () => {
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(32)]);
+    const result = await service.saveImage(jpeg, 'image/jpeg', 'products');
+    expect(result.url).toMatch(/^\/uploads\/products\/.+\.jpeg$/);
+    expect(fs.promises.writeFile).toHaveBeenCalled();
+  });
+
+  it('rechaza bytes que no coinciden con el tipo declarado', async () => {
+    await expect(service.saveImage(Buffer.from('<?php echo 1; ?> padding padding'), 'image/jpeg')).rejects.toThrow('no es una imagen válida');
   });
 });

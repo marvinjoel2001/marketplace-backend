@@ -1,89 +1,67 @@
+import { createHmac } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
+import { UnauthorizedException } from '@nestjs/common';
 import { OrdersController } from '../orders.controller';
 import { OrdersService } from '../orders.service';
+import { PrismaService } from '../../../prisma/prisma.service';
 
 describe('OrdersController', () => {
   let controller: OrdersController;
-  let service: OrdersService;
+  const buyer = { id: 'user_1', role: 'CUSTOMER' };
 
   const mockOrdersService = {
-    findAll: jest.fn().mockImplementation((limit) =>
-      Promise.resolve([
-        {
-          id: 'ord_1',
-          orderNumber: 'CY-894120-412',
-          totalAmount: 189,
-          items: [],
-        },
-      ])
-    ),
-    findByIdOrNumber: jest.fn().mockImplementation((idOrNumber) =>
-      Promise.resolve({
-        id: 'ord_1',
-        orderNumber: idOrNumber,
-        customerName: 'Juan Pérez',
-        dspDriverName: 'Carlos Mendoza',
-      })
-    ),
-    create: jest.fn().mockImplementation((body) =>
-      Promise.resolve({
-        id: 'ord_new',
-        orderNumber: 'CY-999999-123',
-        ...body,
-      })
-    ),
+    findByUser: jest.fn().mockResolvedValue([{ id: 'ord_1', orderNumber: 'VT-894120-412', items: [] }]),
+    findForViewer: jest.fn().mockImplementation((idOrNumber) => Promise.resolve({ id: 'ord_1', orderNumber: idOrNumber })),
+    create: jest.fn().mockImplementation((body) => Promise.resolve({ id: 'ord_new', orderNumber: 'VT-000001-100', ...body })),
+    handleDspWebhook: jest.fn().mockResolvedValue({ ok: true }),
   };
 
   beforeEach(async () => {
+    jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       controllers: [OrdersController],
       providers: [
-        {
-          provide: OrdersService,
-          useValue: mockOrdersService,
-        },
+        { provide: OrdersService, useValue: mockOrdersService },
+        { provide: PrismaService, useValue: {} },
       ],
     }).compile();
-
     controller = module.get<OrdersController>(OrdersController);
-    service = module.get<OrdersService>(OrdersService);
   });
 
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
+  afterEach(() => {
+    delete process.env.DSP_WEBHOOK_SECRET;
   });
 
-  describe('getAll', () => {
-    it('should return list of orders', async () => {
-      const result = await controller.getAll('10');
-      expect(Array.isArray(result)).toBe(true);
-      expect(result[0].orderNumber).toBe('CY-894120-412');
-      expect(service.findAll).toHaveBeenCalledWith(10);
+  it('lists only the signed-in user’s orders', async () => {
+    await controller.getMine(buyer);
+    expect(mockOrdersService.findByUser).toHaveBeenCalledWith('user_1');
+  });
+
+  it('looks an order up for the signed-in viewer', async () => {
+    const result = await controller.getOne('VT-894120-412', buyer);
+    expect(result.orderNumber).toBe('VT-894120-412');
+    expect(mockOrdersService.findForViewer).toHaveBeenCalledWith('VT-894120-412', 'user_1');
+  });
+
+  it('creates the order for the session user, whatever userId the body says', async () => {
+    await controller.create({ userId: 'someone_else', items: [] }, buyer);
+    expect(mockOrdersService.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user_1' }));
+  });
+
+  describe('webhook/dsp', () => {
+    const payload = { event: 'order.delivered', timestamp: '2026-10-31T12:00:00Z', data: { order_id: 'dsp_1', merchant_reference: 'VT-1' } };
+
+    it('accepts a body signed with DSP_WEBHOOK_SECRET', async () => {
+      process.env.DSP_WEBHOOK_SECRET = 'whsec_test';
+      const signature = createHmac('sha256', 'whsec_test').update(JSON.stringify(payload)).digest('hex');
+      await expect(controller.handleDspWebhook(payload, signature)).resolves.toEqual({ ok: true });
     });
-  });
 
-  describe('getOne', () => {
-    it('should return order tracking details by orderNumber', async () => {
-      const result = await controller.getOne('CY-894120-412');
-      expect(result.orderNumber).toBe('CY-894120-412');
-      expect(result.dspDriverName).toBe('Carlos Mendoza');
-      expect(service.findByIdOrNumber).toHaveBeenCalledWith('CY-894120-412');
-    });
-  });
-
-  describe('create', () => {
-    it('should create an order with items and dsp dispatch', async () => {
-      const dto = {
-        customerName: 'Juan Pérez',
-        customerPhone: '+591 77098765',
-        customerAddress: 'Equipetrol',
-        totalAmount: 189,
-        paymentMethod: 'QR_SIMPLE',
-        items: [],
-      };
-      const result = await controller.create(dto);
-      expect(result.orderNumber).toBeDefined();
-      expect(service.create).toHaveBeenCalledWith(dto);
+    it('rejects a missing or wrong signature', async () => {
+      process.env.DSP_WEBHOOK_SECRET = 'whsec_test';
+      await expect(controller.handleDspWebhook(payload, undefined)).rejects.toThrow(UnauthorizedException);
+      await expect(controller.handleDspWebhook(payload, 'deadbeef')).rejects.toThrow(UnauthorizedException);
+      expect(mockOrdersService.handleDspWebhook).not.toHaveBeenCalled();
     });
   });
 });

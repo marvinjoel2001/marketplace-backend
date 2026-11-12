@@ -1,4 +1,5 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DspService } from '../dsp/dsp.service';
@@ -45,14 +46,6 @@ export class OrdersService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  async findAll(limit: number = 20) {
-    return this.prisma.order.findMany({
-      include: { items: true },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
-  }
-
   async findByUser(userId: string) {
     return this.prisma.order.findMany({
       where: { userId },
@@ -69,11 +62,19 @@ export class OrdersService {
       },
       include: {
         items: {
-          include: { store: true },
+          include: { store: { select: { id: true, name: true, slug: true, logo: true, phone: true, address: true, ownerId: true } } },
         },
       },
     });
     if (!order) throw new NotFoundException('Pedido no encontrado');
+    return order;
+  }
+
+  /** An order is visible to the customer who placed it and to the owner of the store that sells it. */
+  async findForViewer(idOrNumber: string, userId: string) {
+    const order = await this.findByIdOrNumber(idOrNumber);
+    const isStore = order.items.some((item) => item.store?.ownerId === userId);
+    if (order.userId !== userId && !isStore) throw new NotFoundException('Pedido no encontrado');
     return order;
   }
 
@@ -179,8 +180,9 @@ export class OrdersService {
     const vendorEarnings = Number((subtotal - platformCommission).toFixed(2));
     const orderNumber = `VT-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
 
-    const [order] = await this.prisma.$transaction([
-      this.prisma.order.create({
+    // Stock is taken inside the transaction and only if it is still there, so two buyers can't get the last unit.
+    const order = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.order.create({
         data: {
           orderNumber,
           userId: data.userId || null,
@@ -222,17 +224,24 @@ export class OrdersService {
           },
         },
         include: { items: true },
-      }),
-      ...[...byId.values()].map((e) =>
-        this.prisma.productOffer.update({
-          where: { id: e.offer.id },
+      });
+      for (const e of byId.values()) {
+        const taken = await tx.productOffer.updateMany({
+          where: {
+            id: e.offer.id,
+            stock: { gte: e.taken },
+            ...(e.variants.length ? { variants: e.offer.variants } : {}),
+          },
           data: {
             stock: { decrement: e.taken },
             ...(e.variants.length && { variants: JSON.stringify(e.variants) }),
           },
-        }),
-      ),
-    ]);
+        });
+        if (taken.count !== 1)
+          throw new ConflictException(`Alguien acaba de comprar "${e.offer.product.title}". Revisa tu carrito e inténtalo otra vez.`);
+      }
+      return created;
+    });
     await this.notifications.notifyOrder(order, 'ORDER_CREATED');
     return order;
   }
@@ -277,11 +286,10 @@ export class OrdersService {
         take: 20,
       });
       for (const order of due) {
-        try {
-          await this.dispatch(order);
-        } catch (error) {
-          this.logger.warn(`No se pudo despachar el pedido ${order.orderNumber}: ${(error as Error).message}`);
-        }
+        // One failing order (OpenDSP down, bad address) must not hold back the others; it is retried next minute.
+        await this.dispatch(order).catch((error: Error) =>
+          this.logger.warn(`Pedido ${order.orderNumber}: OpenDSP no aceptó el despacho (${error.message}). Se reintenta.`),
+        );
       }
     } catch (error) {
       this.logger.warn(`No se pudieron despachar pedidos programados: ${(error as Error).message}`);
@@ -352,105 +360,130 @@ export class OrdersService {
     return updated;
   }
 
-  async updateStatus(idOrNumber: string, newStatus: string) {
-    const validStatuses = ['PENDING', 'SCHEDULED', 'CONFIRMED', 'PREPARING', 'DSP_DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'];
-    if (!validStatuses.includes(newStatus)) {
-      throw new BadRequestException(`Estado no válido: ${newStatus}. Estados válidos: ${validStatuses.join(', ')}`);
+  /**
+   * Sets an order's status (SCHEDULED → PREPARING → DSP_DISPATCHED → IN_TRANSIT → DELIVERED, or CANCELLED). Delivered and cancelled
+   * orders are final. The store is credited exactly once (when the order becomes DELIVERED) and a cancellation puts
+   * the units back in stock; both happen in the same transaction as the status change, which only applies if nobody
+   * changed the order in between.
+   */
+  async updateStatus(idOrNumber: string, newStatus: string, extra: Prisma.OrderUpdateInput = {}) {
+    if (!ORDER_STATUSES.includes(newStatus as never)) {
+      throw new BadRequestException(`Estado no válido: ${newStatus}. Estados válidos: ${ORDER_STATUSES.join(', ')}`);
     }
 
     const order = await this.prisma.order.findFirst({
-      where: {
-        OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }],
-      },
+      where: { OR: [{ id: idOrNumber }, { orderNumber: idOrNumber }] },
       include: { items: true },
     });
+    if (!order) throw new NotFoundException(`Orden ${idOrNumber} no encontrada`);
+    if (order.status === newStatus) return order;
+    if (order.status === 'CANCELLED') throw new BadRequestException('No se puede modificar el estado de una orden cancelada');
+    if (order.status === 'DELIVERED') throw new BadRequestException('El pedido ya fue entregado');
 
-    if (!order) {
-      throw new NotFoundException(`Orden ${idOrNumber} no encontrada`);
-    }
+    // Cash or QR on delivery is collected by the driver at the door.
+    const collected =
+      newStatus === 'DELIVERED' && PAY_ON_DELIVERY.includes(order.paymentMethod) && order.paymentStatus !== 'PAID'
+        ? { paymentStatus: 'PAID', paidAt: new Date() }
+        : {};
 
-    if (order.status === 'CANCELLED' && newStatus !== 'CANCELLED') {
-      throw new BadRequestException('No se puede modificar el estado de una orden cancelada');
-    }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.order.updateMany({ where: { id: order.id, status: order.status }, data: { status: newStatus } });
+      if (changed.count !== 1) throw new ConflictException('El pedido cambió mientras tanto. Vuelve a intentarlo.');
 
-    const delivered = newStatus === 'DELIVERED' && order.status !== 'DELIVERED';
-    const updatedOrder = await this.prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: newStatus,
-        // Cash or QR on delivery is collected by the driver at the door.
-        ...(delivered && PAY_ON_DELIVERY.includes(order.paymentMethod) && order.paymentStatus !== 'PAID' && { paymentStatus: 'PAID', paidAt: new Date() }),
-      },
-      include: { items: true },
-    });
-    if (newStatus !== order.status && STATUS_EVENT[newStatus]) await this.notifications.notifyOrder(updatedOrder, STATUS_EVENT[newStatus]);
-
-    // Si el estado pasa a DELIVERED, abonar las ganancias a la billetera de la tienda
-    if (newStatus === 'DELIVERED' && order.status !== 'DELIVERED' && order.vendorEarnings) {
-      const primaryStoreId = order.storeId || order.items?.[0]?.storeId;
-      if (primaryStoreId) {
-        const store = await this.prisma.store.findUnique({ where: { id: primaryStoreId } });
-        if (store) {
-          await this.prisma.store.update({
-            where: { id: primaryStoreId },
-            data: {
-              walletBalance: Number((store.walletBalance + order.vendorEarnings).toFixed(2)),
-              salesCount: store.salesCount + 1,
-            },
-          });
-        }
+      const storeId = order.storeId || order.items[0]?.storeId;
+      if (newStatus === 'DELIVERED' && storeId) {
+        await tx.store.update({
+          where: { id: storeId },
+          data: { walletBalance: { increment: order.vendorEarnings ?? 0 }, salesCount: { increment: 1 } },
+        });
       }
-    }
+      if (newStatus === 'CANCELLED') await this.restock(tx, order.items);
 
-    return updatedOrder;
+      return tx.order.update({ where: { id: order.id }, data: { ...extra, ...collected }, include: { items: true } });
+    });
+    if (STATUS_EVENT[newStatus]) await this.notifications.notifyOrder(updated, STATUS_EVENT[newStatus]);
+    return updated;
+  }
+
+  /** Puts the units of a cancelled order back, including the option (size, voltage, ...) they were bought in. */
+  private async restock(tx: Prisma.TransactionClient, items: { productOfferId: string | null; quantity: number; variant: string | null }[]) {
+    for (const item of items) {
+      if (!item.productOfferId) continue;
+      const offer = await tx.productOffer.findUnique({ where: { id: item.productOfferId } });
+      if (!offer) continue;
+      const variants = parseVariants(offer.variants);
+      const option = item.variant ? variants.find((v) => v.label.toLocaleLowerCase('es') === item.variant!.toLocaleLowerCase('es')) : undefined;
+      if (option) option.stock += item.quantity;
+      await tx.productOffer.update({
+        where: { id: offer.id },
+        data: { stock: { increment: item.quantity }, ...(option && { variants: JSON.stringify(variants) }) },
+      });
+    }
   }
 
   /**
-   * Status updates from OpenDSP Core. Core sends { event, data: { order_id, merchant_reference, status, driver } };
-   * the flat { orderId | externalOrderId, status } shape is still accepted for manual calls.
+   * Status updates OpenDSP posts to this backend: `{ event, timestamp, data: { order_id, merchant_reference, status, driver } }`,
+   * signed by the caller (checked in the controller). Events only move the order forward.
    */
-  async handleDspWebhook(payload: any) {
-    const data = payload?.data ?? payload ?? {};
-    const event: string = payload?.event ?? '';
-    const orderRef = data.merchant_reference || data.externalOrderId || payload?.externalOrderId;
-    const dspOrderId = data.order_id || data.orderId || payload?.orderId;
-    if (!orderRef && !dspOrderId) {
-      throw new BadRequestException('Webhook payload sin referencia de orden');
-    }
+  async handleDspWebhook(payload: DspWebhookPayload) {
+    const data = payload?.data ?? {};
+    const ref = data.merchant_reference || data.order_id;
+    if (!payload?.event || !ref) throw new BadRequestException('Webhook sin evento o sin referencia de pedido');
 
     const order = await this.prisma.order.findFirst({
-      where: { OR: [orderRef && { orderNumber: orderRef }, dspOrderId && { dspOrderId }, dspOrderId && { id: dspOrderId }].filter(Boolean) as any },
+      where: {
+        OR: [
+          ...(data.merchant_reference ? [{ orderNumber: data.merchant_reference }] : []),
+          ...(data.order_id ? [{ dspOrderId: data.order_id }] : []),
+        ],
+      },
     });
-    if (!order) throw new NotFoundException(`Orden ${orderRef || dspOrderId} no encontrada`);
+    if (!order) throw new NotFoundException(`Pedido ${ref} no encontrado`);
 
-    const status: string = data.status ?? payload?.status ?? '';
-    if (data.driver?.name || data.tracking_url) {
-      const withDriver = await this.prisma.order.update({
-        where: { id: order.id },
-        data: {
-          ...(data.driver?.name && { dspDriverName: data.driver.name, dspDriverPhone: data.driver.phone ?? null, dspDriverRating: null }),
-          ...(data.tracking_url && { dspTrackingUrl: data.tracking_url }),
-        },
-      });
-      if (data.driver?.name && data.driver.name !== order.dspDriverName) await this.notifications.notifyOrder(withDriver, 'DRIVER_ASSIGNED');
+    const driver: Prisma.OrderUpdateInput = {
+      ...(data.driver?.name && { dspDriverName: data.driver.name, dspDriverPhone: data.driver.phone ?? null }),
+      ...(data.tracking_url && { dspTrackingUrl: data.tracking_url }),
+    };
+    const newDriver = !!data.driver?.name && data.driver.name !== order.dspDriverName;
+    const target = DSP_EVENT_STATUS[payload.event];
+    if (payload.event === 'order.cancelled') {
+      // The courier side gave up: the order goes back to the queue and is dispatched again.
+      if (order.status === 'DSP_DISPATCHED' || order.status === 'IN_TRANSIT') {
+        await this.prisma.order.update({
+          where: { id: order.id },
+          data: { status: 'SCHEDULED', dispatchedAt: null, dspOrderId: null, dspTrackingToken: null, dspDriverName: null, dspDriverPhone: null },
+        });
+      }
+      return { ok: true };
     }
-
-    // Core cancelling only drops the driver; the customer's order stays open for the admin to resend it.
-    if (status === 'CANCELLED' || event === 'order.cancelled') {
-      return this.prisma.order.update({
-        where: { id: order.id },
-        data: { status: 'SCHEDULED', dispatchedAt: null, dspOrderId: null, dspTrackingToken: null, dspDriverName: null, dspDriverPhone: null },
-        include: { items: true },
-      });
+    let updated;
+    if (!target || STATUS_RANK[target] <= (STATUS_RANK[order.status] ?? -1)) {
+      if (Object.keys(driver).length) updated = await this.prisma.order.update({ where: { id: order.id }, data: driver });
+    } else {
+      updated = await this.updateStatus(order.id, target, driver);
     }
-
-    const targetStatus =
-      status === 'DELIVERED' || event === 'order.delivered'
-        ? 'DELIVERED'
-        : status === 'IN_TRANSIT' || status === 'PICKED_UP' || event === 'order.in_transit'
-          ? 'IN_TRANSIT'
-          : 'DSP_DISPATCHED';
-    if (order.status === targetStatus) return this.findByIdOrNumber(order.id);
-    return this.updateStatus(order.id, targetStatus);
+    if (newDriver && updated) await this.notifications.notifyOrder(updated, 'DRIVER_ASSIGNED');
+    return { ok: true };
   }
+}
+
+export const ORDER_STATUSES = ['SCHEDULED', 'CONFIRMED', 'PREPARING', 'DSP_DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'] as const;
+const STATUS_RANK: Record<string, number> = { SCHEDULED: 0, CONFIRMED: 0, PREPARING: 1, DSP_DISPATCHED: 2, IN_TRANSIT: 3, DELIVERED: 4 };
+const DSP_EVENT_STATUS: Record<string, string> = {
+  'order.assigned': 'DSP_DISPATCHED',
+  'order.arrived_pickup': 'DSP_DISPATCHED',
+  'order.in_transit': 'IN_TRANSIT',
+  'order.delivered': 'DELIVERED',
+};
+
+export interface DspWebhookPayload {
+  event?: string;
+  timestamp?: string;
+  data?: {
+    order_id?: string;
+    merchant_reference?: string;
+    status?: string;
+    driver?: { name?: string; phone?: string };
+    tracking_url?: string;
+  };
 }

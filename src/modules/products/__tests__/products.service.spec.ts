@@ -55,7 +55,7 @@ describe('ProductsService', () => {
     });
 
     it('should find a single product if slug is specified in params', async () => {
-      mockPrisma.product.findUnique.mockResolvedValue({
+      mockPrisma.product.findFirst.mockResolvedValue({
         id: 'p1',
         title: 'iPhone 15 Pro',
         slug: 'iphone-15-pro',
@@ -67,7 +67,7 @@ describe('ProductsService', () => {
     });
 
     it('should throw NotFoundException if slug is not found in findAll', async () => {
-      mockPrisma.product.findUnique.mockResolvedValue(null);
+      mockPrisma.product.findFirst.mockResolvedValue(null);
       await expect(service.findAll({ slug: 'non-existing' })).rejects.toThrow(
         NotFoundException
       );

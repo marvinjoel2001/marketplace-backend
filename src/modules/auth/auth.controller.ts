@@ -1,7 +1,8 @@
-import { Controller, Post, Get, Body, Param, Headers, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Headers, Req, UseGuards, UnauthorizedException } from '@nestjs/common';
 import { AuthService, SocialLoginDto, EnrichProfileDto, SyncInterestsDto, normalizeBoliviaPhone } from './auth.service';
 import { OtpService } from './otp.service';
 import { InternalKeyGuard } from './internal-key.guard';
+import { CurrentUser, SessionUser, UserGuard } from './user.guard';
 import { firebaseVerifiedPhone } from './firebase-phone';
 
 @Controller('auth')
@@ -24,7 +25,7 @@ export class AuthController {
     return this.otp.request(body?.phone ?? '', clientIp || req.ip);
   }
 
-  /** Only a checked OTP or a Firebase token for this same phone may start a session. */
+  /** Step 2: the code (or a Firebase token for that same number) proves the number, and only then is the user returned. */
   @Post('otp/verify')
   @UseGuards(InternalKeyGuard)
   async verifyOtp(@Body() body: { phone?: string; code?: string; idToken?: string }) {
@@ -39,17 +40,20 @@ export class AuthController {
   }
 
   @Post('enrich-profile')
-  async enrichProfile(@Body() dto: EnrichProfileDto) {
-    return this.authService.enrichProfile(dto);
+  @UseGuards(UserGuard)
+  async enrichProfile(@Body() dto: EnrichProfileDto, @CurrentUser() user: SessionUser) {
+    return this.authService.enrichProfile({ ...dto, userId: user.id });
   }
 
   @Post('sync-interests')
-  async syncInterests(@Body() dto: SyncInterestsDto) {
-    return this.authService.syncInterests(dto);
+  @UseGuards(UserGuard)
+  async syncInterests(@Body() dto: SyncInterestsDto, @CurrentUser() user: SessionUser) {
+    return this.authService.syncInterests({ ...dto, userId: user.id });
   }
 
-  @Get('me/:id')
-  async getUser(@Param('id') id: string) {
-    return this.authService.getUser(id);
+  @Get('me')
+  @UseGuards(UserGuard)
+  async getUser(@CurrentUser() user: SessionUser) {
+    return this.authService.getUser(user.id);
   }
 }

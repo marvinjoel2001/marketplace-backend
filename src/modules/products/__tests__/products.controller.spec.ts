@@ -1,3 +1,4 @@
+import { PrismaService } from '../../../prisma/prisma.service';
 import { PhotoAiService } from '../photo-ai.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ProductsController } from '../products.controller';
@@ -36,6 +37,9 @@ describe('ProductsController', () => {
     ),
   };
 
+  const owner = { id: 'owner_1', role: 'VENDOR' };
+  const mockPrisma = { store: { findFirst: jest.fn().mockResolvedValue({ id: 'store_1', slug: 'store_1', ownerId: 'owner_1' }) } };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProductsController],
@@ -45,6 +49,7 @@ describe('ProductsController', () => {
           useValue: mockProductsService,
         },
         { provide: PhotoAiService, useValue: {} },
+        { provide: PrismaService, useValue: mockPrisma },
       ],
     }).compile();
 
@@ -84,11 +89,17 @@ describe('ProductsController', () => {
         title: 'Nuevo Smartwatch',
         basePrice: 199,
         categoryId: 'cat_1',
+        storeId: 'store_1',
       };
-      const result = await controller.create(body);
+      const result = await controller.create(body, owner);
       expect(result.id).toBe('prod_new');
       expect(result.title).toBe('Nuevo Smartwatch');
       expect(service.create).toHaveBeenCalledWith(body);
     });
+  });
+
+  it('no deja publicar en una tienda ajena', async () => {
+    await expect(controller.create({ title: 'x', storeId: 'store_1' }, { id: 'intruso', role: 'CUSTOMER' })).rejects.toThrow('no es tuya');
+    expect(service.create).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'x' }));
   });
 });

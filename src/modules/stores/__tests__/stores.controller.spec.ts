@@ -1,3 +1,4 @@
+import { PrismaService } from '../../../prisma/prisma.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { StoresController } from '../stores.controller';
 import { StoresService } from '../stores.service';
@@ -33,6 +34,9 @@ describe('StoresController', () => {
     ),
   };
 
+  const owner = { id: 'owner_1', role: 'VENDOR' };
+  const mockPrisma = { store: { findFirst: jest.fn().mockResolvedValue({ id: 'store_1', slug: 'store_1', ownerId: 'owner_1' }) } };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [StoresController],
@@ -41,6 +45,7 @@ describe('StoresController', () => {
           provide: StoresService,
           useValue: mockStoresService,
         },
+        { provide: PrismaService, useValue: mockPrisma },
       ],
     }).compile();
 
@@ -77,9 +82,14 @@ describe('StoresController', () => {
         phone: '+591 77012345',
         address: 'Equipetrol',
       };
-      const result = await controller.create(dto);
+      const result = await controller.create({ ...dto, ownerId: 'otro' }, owner);
       expect(result.id).toBe('store_new');
-      expect(service.create).toHaveBeenCalledWith(dto);
+      // The store always belongs to whoever is signed in.
+      expect(service.create).toHaveBeenCalledWith({ ...dto, ownerId: 'owner_1' });
     });
+  });
+
+  it('solo el dueño edita la tienda', async () => {
+    await expect(controller.update('store_1', { name: 'X' }, { id: 'intruso', role: 'VENDOR' })).rejects.toThrow('no es tuya');
   });
 });

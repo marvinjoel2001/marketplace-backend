@@ -4,6 +4,24 @@ import { LIVE_TTL_SECONDS } from '../tiktok-lives/tiktok-lives.types';
 import { normalizeSchedule } from './delivery-schedule';
 import { normalizeAxis, normalizeVariants, parseVariants, totalStock } from '../products/variants';
 
+/** Columns only the owner and the admin see: payout details, balance, commissions and who owns the store. */
+const PRIVATE_STORE_FIELDS = [
+  'walletBalance',
+  'bankAccountInfo',
+  'payoutQr',
+  'ownerId',
+  'customCommissionRate',
+  'shippingBaseFare',
+  'shippingPerKm',
+  'statusReason',
+] as const;
+
+export function publicStore<T extends object>(store: T): Omit<T, (typeof PRIVATE_STORE_FIELDS)[number]> {
+  const out = { ...store } as Record<string, unknown>;
+  for (const key of PRIVATE_STORE_FIELDS) delete out[key];
+  return out as Omit<T, (typeof PRIVATE_STORE_FIELDS)[number]>;
+}
+
 @Injectable()
 export class StoresService {
   constructor(private readonly prisma: PrismaService) {}
@@ -16,7 +34,7 @@ export class StoresService {
       whereClause.isLiveNow = true;
     }
 
-    return this.prisma.store.findMany({
+    const stores = await this.prisma.store.findMany({
       where: whereClause,
       include: {
         liveStreams: {
@@ -29,8 +47,10 @@ export class StoresService {
       },
       orderBy: { salesCount: 'desc' },
     });
+    return stores.map(publicStore);
   }
 
+  /** The storefront page: only active stores, without private columns. */
   async findBySlugOrId(idOrSlug: string) {
     const store = await this.prisma.store.findFirst({
       where: {
@@ -53,8 +73,8 @@ export class StoresService {
       },
     });
 
-    if (!store) throw new NotFoundException('Tienda no encontrada');
-    return store;
+    if (!store || store.status !== 'ACTIVE') throw new NotFoundException('Tienda no encontrada');
+    return publicStore(store);
   }
 
   async create(data: {
@@ -176,9 +196,14 @@ export class StoresService {
     }
 
     if (data.bankAccountInfo !== undefined) {
-      const raw = (typeof data.bankAccountInfo === 'string'
-        ? JSON.parse(data.bankAccountInfo || '{}')
-        : data.bankAccountInfo) as Record<string, unknown> | null;
+      let raw = data.bankAccountInfo as Record<string, unknown> | null;
+      if (typeof data.bankAccountInfo === 'string') {
+        try {
+          raw = JSON.parse(data.bankAccountInfo || '{}');
+        } catch {
+          throw new BadRequestException('Revisa los datos de tu cuenta bancaria');
+        }
+      }
       const pick = (k: string) => String(raw?.[k] ?? '').trim().slice(0, 80);
       out.bankAccountInfo = JSON.stringify({
         bank: pick('bank'),
@@ -526,8 +551,8 @@ export class StoresService {
 
     let offer: any = null;
     if (data.offerId) {
-      offer = await this.prisma.productOffer.findUnique({
-        where: { id: data.offerId },
+      offer = await this.prisma.productOffer.findFirst({
+        where: { id: data.offerId, storeId: store.id },
         include: { product: true },
       });
     } else if (data.productId) {
@@ -548,6 +573,8 @@ export class StoresService {
 
     const originalPrice = offer.price || offer.product?.basePrice || 100;
     const salePrice = Number(data.salePrice);
+    if (!Number.isFinite(salePrice) || salePrice <= 0 || salePrice >= originalPrice)
+      throw new BadRequestException('El precio de oferta debe ser mayor a 0 y menor al precio normal');
     const discountPercent =
       data.discountPercent !== undefined
         ? Number(data.discountPercent)
@@ -585,8 +612,9 @@ export class StoresService {
   }
 
   async toggleOfferPromo(storeId: string, offerId: string) {
-    const offer = await this.prisma.productOffer.findUnique({
-      where: { id: offerId },
+    const store = await this.resolve(storeId);
+    const offer = await this.prisma.productOffer.findFirst({
+      where: { id: offerId, storeId: store.id },
     });
     if (!offer) throw new NotFoundException('Oferta no encontrada');
 
@@ -643,7 +671,11 @@ export class StoresService {
     });
     if (!store) throw new NotFoundException('Tienda no encontrada');
 
-    const normalizedCode = data.code.toUpperCase().trim();
+    const normalizedCode = String(data.code ?? '').toUpperCase().trim();
+    const value = Number(data.discountValue);
+    if (!normalizedCode) throw new BadRequestException('Escribe el código del cupón');
+    if (!Number.isFinite(value) || value <= 0 || (data.discountType !== 'FIXED_AMOUNT' && value > 90))
+      throw new BadRequestException('Revisa el descuento del cupón');
     const existing = await this.prisma.coupon.findUnique({
       where: { code: normalizedCode },
     });
@@ -670,9 +702,10 @@ export class StoresService {
   }
 
   async deleteCoupon(storeId: string, couponId: string) {
-    return this.prisma.coupon.delete({
-      where: { id: couponId },
-    });
+    const store = await this.resolve(storeId);
+    const coupon = await this.prisma.coupon.findFirst({ where: { id: couponId, storeId: store.id } });
+    if (!coupon) throw new NotFoundException('Cupón no encontrado');
+    return this.prisma.coupon.delete({ where: { id: coupon.id } });
   }
 
   async validateCoupon(code: string, storeId?: string, orderAmount: number = 0) {

@@ -22,6 +22,13 @@ export function publicStore<T extends object>(store: T): Omit<T, (typeof PRIVATE
   return out as Omit<T, (typeof PRIVATE_STORE_FIELDS)[number]>;
 }
 
+/** A store sells up to three kinds of things; they are kept in one column as "Ropa, Calzado, Accesorios". */
+export const MAX_STORE_CATEGORIES = 3;
+export function storeCategories(raw: unknown): string {
+  const names = String(raw ?? '').split(',').map((name) => name.trim().slice(0, 30)).filter(Boolean);
+  return [...new Set(names)].slice(0, MAX_STORE_CATEGORIES).join(', ');
+}
+
 @Injectable()
 export class StoresService {
   constructor(private readonly prisma: PrismaService) {}
@@ -124,7 +131,7 @@ export class StoresService {
       data: {
         slug,
         name: String(name).trim(),
-        category: String(category),
+        category: storeCategories(category),
         address: String(address),
         description: `Tienda ${name}`,
         logo: '',
@@ -177,7 +184,7 @@ export class StoresService {
     };
     text('name', 80);
     text('description', 500);
-    text('category', 60);
+    if (data.category !== undefined) out.category = storeCategories(data.category) || 'Otros';
     text('phone', 30);
     text('address', 300);
     text('addressReference', 300);

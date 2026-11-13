@@ -36,6 +36,14 @@ export class OrdersController {
     return this.ordersService.confirmPayment(id);
   }
 
+  /** The seller's "Pedir repartidor" button: sends the order to OpenDSP now instead of waiting for the schedule. */
+  @Post(':id/dispatch')
+  @UseGuards(UserGuard)
+  async dispatch(@Param('id') id: string, @CurrentUser() user: SessionUser) {
+    const order = await this.ordersService.findForStoreOwner(id, user.id);
+    return this.ordersService.dispatchNow(order.id);
+  }
+
   /**
    * OpenDSP posts status changes here, signed with the tenant's webhook secret (HMAC-SHA256 of the JSON body, hex, in
    * X-DSP-Signature). Register `<backend>/api/v1/orders/webhook/dsp` as the tenant's webhookUrl in OpenDSP.

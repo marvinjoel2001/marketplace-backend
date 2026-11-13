@@ -9,9 +9,10 @@ import { AuthModule } from '../auth/auth.module';
 import { OrdersModule } from '../orders/orders.module';
 import { ProductsModule } from '../products/products.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { TikTokLivesModule } from '../tiktok-lives/tiktok-lives.module';
 
 @Module({
-  imports: [AuthModule, OrdersModule, ProductsModule, NotificationsModule],
+  imports: [AuthModule, OrdersModule, ProductsModule, NotificationsModule, TikTokLivesModule],
   controllers: [AdminController, AdminAuthController],
   providers: [AdminService, AdminInsightsService, AdminAuthService, AdminGuard],
   exports: [AdminService, AdminAuthService],

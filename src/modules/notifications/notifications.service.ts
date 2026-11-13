@@ -67,6 +67,25 @@ export class NotificationsService {
     }
   }
 
+  /** Tells the store owner about a new sale, with a link to that order in the seller panel. */
+  async notifyStoreSale(order: OrderLike & { customerName?: string | null }, ownerId: string | null | undefined) {
+    if (!ownerId) return;
+    try {
+      await this.prisma.notification.create({
+        data: {
+          userId: ownerId,
+          orderId: order.id,
+          kind: 'STORE_SALE',
+          title: 'Nueva venta en tu tienda',
+          body: `Pedido ${order.orderNumber}${order.customerName ? ` de ${order.customerName}` : ''}${order.deliveryWindow ? `, entrega ${order.deliveryWindow}` : ''}. Toca para ver el detalle.`,
+          link: `/vendor/ventas?pedido=${order.id}`,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`No se pudo avisar a la tienda del pedido ${order.orderNumber}: ${(err as Error).message}`);
+    }
+  }
+
   async forUser(userId: string) {
     const [items, unread] = await Promise.all([
       this.prisma.notification.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, take: 50 }),

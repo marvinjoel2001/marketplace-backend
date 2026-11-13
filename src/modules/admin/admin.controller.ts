@@ -21,6 +21,7 @@ import { PhotoAiService } from '../products/photo-ai.service';
 import { WhatsAppService } from '../auth/whatsapp.service';
 import { OrdersService } from '../orders/orders.service';
 import { normalizeBoliviaPhone } from '../auth/auth.service';
+import { TikTokLivesService } from '../tiktok-lives/tiktok-lives.service';
 
 @Controller('admin')
 @UseGuards(AdminGuard)
@@ -32,6 +33,7 @@ export class AdminController {
     private readonly whatsapp: WhatsAppService,
     private readonly orders: OrdersService,
     private readonly photoAi: PhotoAiService,
+    private readonly tiktokLives: TikTokLivesService,
   ) {}
 
   // ==========================================
@@ -50,6 +52,17 @@ export class AdminController {
   @Get('stores/:id/detail')
   storeDetail(@Param('id') id: string) {
     return this.insights.storeDetail(id);
+  }
+
+  /**
+   * The admin confirms the TikTok user a seller typed in their settings really is theirs. Only then does
+   * the worker check that account and show its live video next to the store's products.
+   */
+  @Post('stores/:id/tiktok/verify')
+  async verifyTikTok(@Param('id') id: string) {
+    const { tiktokUsername } = await this.insights.storeTikTok(id);
+    if (!tiktokUsername) throw new BadRequestException('La tienda no tiene usuario de TikTok');
+    return this.tiktokLives.register(id, tiktokUsername);
   }
 
   @Patch('stores/:id/config')

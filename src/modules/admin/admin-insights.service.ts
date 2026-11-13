@@ -121,7 +121,7 @@ export class AdminInsightsService {
   async stores() {
     const [stores, orders, payouts, defaults] = await Promise.all([
       this.prisma.store.findMany({
-        include: { _count: { select: { offers: true } } },
+        include: { _count: { select: { offers: true } }, registeredTikTokAccount: { select: { username: true } } },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.order.findMany({
@@ -153,6 +153,7 @@ export class AdminInsightsService {
         longitude: store.longitude,
         phone: store.phone,
         tiktokUsername: store.tiktokUsername,
+        tiktokVerified: Boolean(store.tiktokUsername) && store.registeredTikTokAccount?.username === store.tiktokUsername,
         status: store.status,
         statusReason: store.statusReason,
         createdAt: store.createdAt,
@@ -169,6 +170,12 @@ export class AdminInsightsService {
         ...metrics,
       };
     });
+  }
+
+  async storeTikTok(id: string) {
+    const store = await this.prisma.store.findUnique({ where: { id }, select: { tiktokUsername: true } });
+    if (!store) throw new NotFoundException('Tienda no encontrada');
+    return store;
   }
 
   async storeDetail(id: string) {

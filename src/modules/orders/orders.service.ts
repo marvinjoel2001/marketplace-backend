@@ -78,6 +78,13 @@ export class OrdersService {
     return order;
   }
 
+  /** Only the owner of the store that sells the order may act on it as the seller. */
+  async findForStoreOwner(idOrNumber: string, userId: string) {
+    const order = await this.findByIdOrNumber(idOrNumber);
+    if (!order.items.some((item) => item.store?.ownerId === userId)) throw new NotFoundException('Pedido no encontrado');
+    return order;
+  }
+
   /**
    * Creates one order for one store. Prices, stock and shipping come from the database and the
    * delivery quote, never from the client; the delivery window must be one the store offers.
@@ -243,6 +250,7 @@ export class OrdersService {
       return created;
     });
     await this.notifications.notifyOrder(order, 'ORDER_CREATED');
+    await this.notifications.notifyStoreSale(order, store.ownerId);
     return order;
   }
 

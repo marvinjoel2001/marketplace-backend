@@ -7,6 +7,7 @@ import { AdminGuard } from '../admin.guard';
 import { SettingsService } from '../../settings/settings.service';
 import { WhatsAppService } from '../../auth/whatsapp.service';
 import { OrdersService } from '../../orders/orders.service';
+import { TikTokLivesService } from '../../tiktok-lives/tiktok-lives.service';
 
 describe('AdminController', () => {
   let controller: AdminController;
@@ -37,6 +38,7 @@ describe('AdminController', () => {
         { provide: WhatsAppService, useValue: {} },
         { provide: OrdersService, useValue: {} },
         { provide: PhotoAiService, useValue: {} },
+        { provide: TikTokLivesService, useValue: {} },
       ],
     })
       .overrideGuard(AdminGuard)

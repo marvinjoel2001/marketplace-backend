@@ -396,7 +396,7 @@ model Notification {
   id        String    @id @default(cuid())
   userId    String
   orderId   String?
-  kind      String    // ORDER_CREATED, PAYMENT_CONFIRMED, DISPATCHED, DRIVER_ASSIGNED, IN_TRANSIT, DELIVERED, CANCELLED
+  kind      String    // STORE_SALE (for the seller), ORDER_CREATED, PAYMENT_CONFIRMED, DISPATCHED, DRIVER_ASSIGNED, IN_TRANSIT, DELIVERED, CANCELLED
   title     String
   body      String
   link      String?   // Internal path ("/pedido/VT-...") or external tracking URL

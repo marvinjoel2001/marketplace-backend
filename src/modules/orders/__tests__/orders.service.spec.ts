@@ -23,7 +23,7 @@ describe('OrdersService', () => {
       update: jest.fn(),
     },
   };
-  const mockNotifications = { notifyOrder: jest.fn() };
+  const mockNotifications = { notifyOrder: jest.fn(), notifyStoreSale: jest.fn() };
 
   const mockDspService = {
     getQuote: jest.fn().mockResolvedValue({
@@ -88,6 +88,17 @@ describe('OrdersService', () => {
       await expect(service.findForViewer('VT-1', 'buyer')).resolves.toMatchObject({ id: 'o1' });
       await expect(service.findForViewer('VT-1', 'seller')).resolves.toMatchObject({ id: 'o1' });
       await expect(service.findForViewer('VT-1', 'stranger')).rejects.toThrow('Pedido no encontrado');
+    });
+
+    it('solo la tienda que vende el pedido puede actuar como vendedora (pedir repartidor)', async () => {
+      mockPrisma.order.findFirst.mockResolvedValue({
+        id: 'o1',
+        orderNumber: 'VT-1',
+        userId: 'buyer',
+        items: [{ store: { ownerId: 'seller' } }],
+      });
+      await expect(service.findForStoreOwner('VT-1', 'seller')).resolves.toMatchObject({ id: 'o1' });
+      await expect(service.findForStoreOwner('VT-1', 'buyer')).rejects.toThrow('Pedido no encontrado');
     });
 
     it('should report a missing order instead of inventing one', async () => {
@@ -156,6 +167,12 @@ describe('OrdersService', () => {
         data: { stock: { decrement: 2 } },
       });
       expect(mockDspService.dispatchOrder).not.toHaveBeenCalled();
+    });
+
+    it('avisa de la venta al dueño de la tienda', async () => {
+      mockPrisma.productOffer.findMany.mockResolvedValue([{ ...offer, store: { ...store, ownerId: 'seller' } }]);
+      await service.create({ ...base, deliveryAt: '2026-11-02T16:00:00.000Z' });
+      expect(mockNotifications.notifyStoreSale).toHaveBeenCalledWith(expect.objectContaining({ storeId: 'store-1' }), 'seller');
     });
 
     it('no vende la última unidad dos veces: si otro comprador la tomó, el pedido falla', async () => {

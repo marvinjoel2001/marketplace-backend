@@ -8,7 +8,8 @@ export type OrderEvent =
   | 'DRIVER_ASSIGNED'
   | 'IN_TRANSIT'
   | 'DELIVERED'
-  | 'CANCELLED';
+  | 'CANCELLED'
+  | 'RESCHEDULED';
 
 interface OrderLike {
   id: string;
@@ -43,6 +44,8 @@ function message(event: OrderEvent, o: OrderLike): { title: string; body: string
       return { title: 'Tu pedido va en camino', body: `El pedido ${o.orderNumber} salió de la tienda hacia tu dirección.`, link: o.dspTrackingUrl || page };
     case 'DELIVERED':
       return { title: 'Pedido entregado', body: `Entregamos el pedido ${o.orderNumber}. ¡Gracias por comprar en Vitrina!`, link: page };
+    case 'RESCHEDULED':
+      return { title: 'Cambiaste la hora de entrega', body: `El pedido ${o.orderNumber} ahora llega ${o.deliveryWindow ?? 'en el nuevo horario'}.`, link: page };
     case 'CANCELLED':
       return { title: 'Pedido cancelado', body: `El pedido ${o.orderNumber} fue cancelado. Si ya pagaste, la tienda te contactará.`, link: page };
   }
@@ -83,6 +86,25 @@ export class NotificationsService {
       });
     } catch (err) {
       this.logger.warn(`No se pudo avisar a la tienda del pedido ${order.orderNumber}: ${(err as Error).message}`);
+    }
+  }
+
+  /** Tells the store owner the customer moved the delivery, so they prepare for the new time. */
+  async notifyStoreReschedule(order: OrderLike, ownerId: string | null | undefined, when: string) {
+    if (!ownerId) return;
+    try {
+      await this.prisma.notification.create({
+        data: {
+          userId: ownerId,
+          orderId: order.id,
+          kind: 'STORE_RESCHEDULED',
+          title: 'El cliente cambió la hora de entrega',
+          body: `Pedido ${order.orderNumber}: ahora se entrega ${when}.`,
+          link: `/vendor/ventas?pedido=${order.id}`,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`No se pudo avisar a la tienda del cambio de hora del pedido ${order.orderNumber}: ${(err as Error).message}`);
     }
   }
 

@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { randomBytes } from 'crypto';
 import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DspService } from '../dsp/dsp.service';
@@ -8,6 +9,7 @@ import { NotificationsService, type OrderEvent } from '../notifications/notifica
 import { effectivePrice } from '../products/pricing';
 import { parseVariants } from '../products/variants';
 import { isBookableWindow, windowLabel } from '../stores/delivery-schedule';
+import { rescheduleState, stopStep, trackingHeadline } from './tracking';
 
 /** The driver is requested this long before the window starts, so they reach the store on time. */
 export const DISPATCH_BEFORE_MINUTES = 20;
@@ -39,6 +41,7 @@ export interface CreateOrderDto {
 /** An order's part of a purchase made in one checkout. */
 interface PurchaseShare {
   purchaseId: string;
+  trackingCode: string;
   shippingFee: number;
   combinedDelivery: boolean;
 }
@@ -131,10 +134,12 @@ export class OrdersService {
       { lat: prepared[0].lat, lng: prepared[0].lng },
     );
     const purchaseId = `CP-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
+    // One tracking link for the whole purchase.
+    const trackingCode = newTrackingCode();
     const orders = await this.prisma.$transaction(async (tx) => {
       const created: Awaited<ReturnType<(typeof prepared)[number]['save']>>[] = [];
       for (const p of prepared)
-        created.push(await p.save(tx, { purchaseId, shippingFee: shipping.fees[p.store.id], combinedDelivery: shipping.combined }));
+        created.push(await p.save(tx, { purchaseId, trackingCode, shippingFee: shipping.fees[p.store.id], combinedDelivery: shipping.combined }));
       return created;
     });
     for (const [i, order] of orders.entries()) {
@@ -168,6 +173,99 @@ export class OrdersService {
     });
     if (!orders.length) throw new NotFoundException('Compra no encontrada');
     return { purchaseId, combined: orders.some((o) => o.combinedDelivery), orders };
+  }
+
+  /**
+   * The public tracking page: anyone with the link (the customer, or the store that shares it) sees where the order
+   * is, store by store, and the driver once there is one. No phone or e-mail of the customer is exposed.
+   */
+  async track(code: string) {
+    const orders = /^[A-Za-z0-9_-]{12,40}$/.test(code)
+      ? await this.prisma.order.findMany({ where: { trackingCode: code }, include: { items: true }, orderBy: { createdAt: 'asc' } })
+      : [];
+    if (!orders.length) throw new NotFoundException('No encontramos este seguimiento');
+
+    const stores = await this.prisma.store.findMany({
+      where: { id: { in: orders.map((o) => o.storeId).filter((id): id is string => Boolean(id)) } },
+      select: { id: true, name: true, logo: true, address: true, latitude: true, longitude: true, deliveryDays: true, deliveryStart: true, deliveryEnd: true },
+    });
+    const storeOf = new Map(stores.map((s) => [s.id, s]));
+    const stops = orders.map((o) => {
+      const store = o.storeId ? storeOf.get(o.storeId) : undefined;
+      return {
+        orderNumber: o.orderNumber,
+        step: stopStep(o),
+        storeName: store?.name ?? o.items[0]?.storeName ?? 'Tienda',
+        store: store ?? null,
+        items: o.items.map((it) => ({ title: it.productTitle, quantity: it.quantity })),
+      };
+    });
+
+    // Orders of one trip share the driver: one live position is enough.
+    const moving = orders.find((o) => o.dspTrackingToken && ['DSP_DISPATCHED', 'IN_TRANSIT'].includes(o.status));
+    const live = moving?.dspTrackingToken ? await this.dspService.getTracking(moving.dspTrackingToken) : null;
+    const withDriver = orders.find((o) => o.dspDriverName && o.status !== 'CANCELLED' && o.status !== 'DELIVERED');
+    const position = Number.isFinite(Number(live?.driver?.currentLat)) && Number.isFinite(Number(live?.driver?.currentLng)) && live?.driver?.currentLat != null
+      ? { lat: Number(live.driver.currentLat), lng: Number(live.driver.currentLng) }
+      : null;
+
+    const [first] = orders;
+    const open = orders.filter((o) => o.status !== 'CANCELLED');
+    return {
+      code,
+      purchaseId: first.purchaseId,
+      combined: orders.some((o) => o.combinedDelivery),
+      headline: trackingHeadline(stops),
+      deliveryAt: first.deliveryAt,
+      deliveryWindow: first.deliveryWindow,
+      destination: {
+        name: first.customerName,
+        address: first.customerAddress,
+        reference: first.customerReference,
+        lat: first.customerLat,
+        lng: first.customerLng,
+      },
+      paymentMethod: first.paymentMethod,
+      paid: open.length > 0 && open.every((o) => o.paymentStatus === 'PAID'),
+      total: Math.round(open.reduce((sum, o) => sum + o.totalAmount, 0) * 100) / 100,
+      driver: withDriver ? { name: withDriver.dspDriverName, phone: withDriver.dspDriverPhone, position } : null,
+      stops,
+      reschedule: rescheduleState(orders),
+    };
+  }
+
+  /**
+   * The customer moves the delivery to another window, up to an hour before it starts and while no driver has been
+   * requested. Every order of a purchase moves together, so the new window must suit all its stores.
+   */
+  async reschedule(code: string, userId: string, deliveryAtRaw: unknown) {
+    const orders = (await this.prisma.order.findMany({ where: { trackingCode: code } })).filter((o) => o.status !== 'CANCELLED');
+    if (!orders.length) throw new NotFoundException('No encontramos este pedido');
+    if (orders.some((o) => o.userId !== userId)) throw new ForbiddenException('Solo quien hizo el pedido puede cambiar la hora de entrega');
+
+    const state = rescheduleState(orders);
+    if (!state.allowed) throw new BadRequestException(state.reason ?? 'Este pedido ya no se puede reprogramar');
+
+    const deliveryAt = new Date(String(deliveryAtRaw ?? ''));
+    const stores = await this.prisma.store.findMany({ where: { id: { in: orders.map((o) => o.storeId).filter((id): id is string => Boolean(id)) } } });
+    const closed = stores.find((store) => !isBookableWindow(store, deliveryAt));
+    if (closed || Number.isNaN(deliveryAt.getTime()))
+      throw new BadRequestException(closed ? `${closed.name} no entrega en ese horario. Elige otro.` : 'Elige un horario de entrega');
+    if (orders.every((o) => o.deliveryAt?.getTime() === deliveryAt.getTime())) throw new BadRequestException('Ese ya es tu horario de entrega');
+
+    const deliveryWindow = windowLabel(deliveryAt);
+    await this.prisma.order.updateMany({
+      where: { id: { in: orders.map((o) => o.id) }, status: { in: ['SCHEDULED', 'CONFIRMED', 'PREPARING'] }, dispatchedAt: null },
+      data: { deliveryAt, deliveryWindow },
+    });
+    const when = `${deliveryAt.toLocaleDateString('es-BO', { timeZone: 'America/La_Paz', weekday: 'long', day: 'numeric', month: 'long' })}, ${deliveryWindow}`;
+    const ownerOf = new Map(stores.map((s) => [s.id, s.ownerId]));
+    for (const order of orders) {
+      const moved = { ...order, deliveryAt, deliveryWindow: when };
+      await this.notifications.notifyOrder(moved, 'RESCHEDULED');
+      await this.notifications.notifyStoreReschedule(order, order.storeId ? ownerOf.get(order.storeId) : null, when);
+    }
+    return this.track(code);
   }
 
   /** Splits cart lines by the store that sells them. */
@@ -310,6 +408,7 @@ export class OrdersService {
           shippingFee: fee,
           totalAmount: Math.round((subtotal + fee) * 100) / 100,
           purchaseId: purchase?.purchaseId ?? null,
+          trackingCode: purchase?.trackingCode ?? newTrackingCode(),
           combinedDelivery: purchase?.combinedDelivery ?? false,
           platformCommission,
           vendorEarnings,
@@ -591,6 +690,9 @@ export class OrdersService {
     return { ok: true };
   }
 }
+
+/** Code of the public tracking page: long and random, so the link cannot be guessed. */
+const newTrackingCode = () => randomBytes(12).toString('base64url');
 
 export const ORDER_STATUSES = ['SCHEDULED', 'CONFIRMED', 'PREPARING', 'DSP_DISPATCHED', 'IN_TRANSIT', 'DELIVERED', 'CANCELLED'] as const;
 const STATUS_RANK: Record<string, number> = { SCHEDULED: 0, CONFIRMED: 0, PREPARING: 1, DSP_DISPATCHED: 2, IN_TRANSIT: 3, DELIVERED: 4 };

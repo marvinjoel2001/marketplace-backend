@@ -254,6 +254,7 @@ model Order {
   deliveryAt          DateTime?   // Start of the delivery window chosen by the customer
   deliveryWindow      String?     // e.g. "10:00 - 11:00"
   dispatchedAt        DateTime?
+  trackingCode        String?     // Unguessable code of the public tracking page; shared by the orders of a purchase
   purchaseId          String?     // Orders placed together in one checkout (one per store) share it
   combinedDelivery    Boolean     @default(false) // One driver picks up every order of the purchase in a single trip
   createdAt           DateTime    @default(now())
@@ -263,6 +264,7 @@ model Order {
 
   @@index([storeId, createdAt])
   @@index([purchaseId])
+  @@index([trackingCode])
   @@index([status, deliveryAt])
 }
 

@@ -28,6 +28,19 @@ export class OrdersController {
     return this.ordersService.create({ ...body, userId: user.id });
   }
 
+  /** Public tracking page of an order (or a whole purchase): whoever has the link can follow it. */
+  @Get('track/:code')
+  async track(@Param('code') code: string) {
+    return this.ordersService.track(code);
+  }
+
+  /** The customer moves the delivery window (until an hour before it starts). */
+  @Post('track/:code/reschedule')
+  @UseGuards(UserGuard)
+  async reschedule(@Param('code') code: string, @Body() body: { deliveryAt?: string }, @CurrentUser() user: SessionUser) {
+    return this.ordersService.reschedule(code, user.id, body?.deliveryAt);
+  }
+
   /** Delivery price for a cart from several stores (one combined trip when that is cheaper). */
   @Post('purchase/quote')
   async quotePurchase(@Body() body: { items?: CreateOrderDto['items']; customerLat?: number; customerLng?: number }) {

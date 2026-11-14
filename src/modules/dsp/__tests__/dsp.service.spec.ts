@@ -73,6 +73,45 @@ describe('DspService', () => {
       expect(body.packageNotes).toContain('COBRAR EN EFECTIVO');
     });
 
+    describe('compra combinada', () => {
+      const order = {
+        quoteId: 'dsp_q_123',
+        orderNumber: 'VT-1',
+        customerName: 'Juan Pérez',
+        customerPhone: '+591 77012345',
+        customerAddress: 'Av. San Martín #450',
+        customerLat: -17.785,
+        customerLng: -63.18,
+        storeName: 'Tienda A',
+        storeAddress: 'Local 12',
+        storeLat: -17.7685,
+        storeLng: -63.1952,
+        totalAmount: 60,
+        paymentMethod: 'CASH_ON_DELIVERY',
+        batchReference: 'CP-1',
+        routeNote: 'RUTA COMBINADA CP-1: 2 pedidos del mismo cliente, van en un solo viaje',
+      };
+      const accepted = { ok: true, status: 201, json: async () => ({ id: 'core-1', trackingToken: 'trk-1' }) };
+
+      it('manda el número de compra para que OpenDSP junte los pedidos en un viaje', async () => {
+        const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(accepted as any);
+        await service.dispatchOrder(order);
+        const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+        expect(body.batchReference).toBe('CP-1');
+        expect(body.packageNotes).toContain('RUTA COMBINADA CP-1');
+      });
+
+      it('si OpenDSP es una versión que no conoce los viajes combinados, lo manda como entrega normal', async () => {
+        const fetchMock = jest
+          .spyOn(global, 'fetch')
+          .mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'property batchReference should not exist' } as any)
+          .mockResolvedValueOnce(accepted as any);
+        const dispatch = await service.dispatchOrder(order);
+        expect(dispatch?.dspOrderId).toBe('core-1');
+        expect(JSON.parse((fetchMock.mock.calls[1][1] as any).body).batchReference).toBeUndefined();
+      });
+    });
+
     it('returns null instead of inventing a driver when Core is unreachable', async () => {
       jest.spyOn(global, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
       expect(await service.dispatchOrder({

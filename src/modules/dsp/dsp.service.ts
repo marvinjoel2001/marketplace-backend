@@ -43,6 +43,8 @@ export interface DSPOrderRequest {
   deliveryWindow?: string | null;
   /** For a purchase delivered in one trip: tells the driver which stop this is, e.g. "RUTA COMBINADA CP-1: recojo 1 de 2". */
   routeNote?: string | null;
+  /** Orders with the same reference are one combined trip: OpenDSP gives them to one driver and prices them as a route. */
+  batchReference?: string | null;
 }
 
 export interface DSPOrderResponse {
@@ -184,17 +186,32 @@ export class DspService {
       if (isUuid) {
         dspPayload.quoteId = params.quoteId;
       }
+      if (params.batchReference) dspPayload.batchReference = params.batchReference;
 
-      const response = await fetch(`${this.dspApiUrl}/orders`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.dspApiKey,
-          'idempotency-key': `ord_${params.orderNumber}`,
-        },
-        body: JSON.stringify(dspPayload),
-        signal: AbortSignal.timeout(3000),
-      });
+      const send = (body: Record<string, unknown>) =>
+        fetch(`${this.dspApiUrl}/orders`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this.dspApiKey,
+            'idempotency-key': `ord_${params.orderNumber}`,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(3000),
+        });
+      let response = await send(dspPayload);
+      // An OpenDSP older than combined trips rejects the unknown field: deliver it as a normal order instead.
+      if (response.status === 400 && dspPayload.batchReference) {
+        const reason = await response.text();
+        if (reason.includes('batchReference')) {
+          this.logger.warn(`OpenDSP no admite viajes combinados todavía; el pedido #${params.orderNumber} va como entrega normal.`);
+          const { batchReference: _unsupported, ...plain } = dspPayload;
+          response = await send(plain);
+        } else {
+          this.logger.warn(`OpenDSP rechazó el pedido #${params.orderNumber}: HTTP 400 ${reason}`);
+          return null;
+        }
+      }
 
       if (response.ok) {
         const data = await response.json();

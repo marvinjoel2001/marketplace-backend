@@ -445,6 +445,7 @@ export class OrdersService {
       : 0;
     const response = await this.dspService.dispatchOrder({
       routeNote: together > 1 ? `RUTA COMBINADA ${order.purchaseId}: ${together} pedidos del mismo cliente, van en un solo viaje` : null,
+      batchReference: together > 1 ? order.purchaseId : null,
       quoteId: order.dspQuoteId || `dsp_q_${Date.now()}`,
       orderNumber: order.orderNumber,
       customerName: order.customerName,

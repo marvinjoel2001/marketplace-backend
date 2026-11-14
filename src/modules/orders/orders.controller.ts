@@ -28,6 +28,25 @@ export class OrdersController {
     return this.ordersService.create({ ...body, userId: user.id });
   }
 
+  /** Delivery price for a cart from several stores (one combined trip when that is cheaper). */
+  @Post('purchase/quote')
+  async quotePurchase(@Body() body: { items?: CreateOrderDto['items']; customerLat?: number; customerLng?: number }) {
+    return this.ordersService.quotePurchase(body ?? {});
+  }
+
+  /** One checkout for several stores: an order per store, sharing a purchase id. */
+  @Post('purchase')
+  @UseGuards(UserGuard)
+  async createPurchase(@Body() body: CreateOrderDto, @CurrentUser() user: SessionUser) {
+    return this.ordersService.createPurchase({ ...body, userId: user.id });
+  }
+
+  @Get('purchase/:purchaseId')
+  @UseGuards(UserGuard)
+  async getPurchase(@Param('purchaseId') purchaseId: string, @CurrentUser() user: SessionUser) {
+    return this.ordersService.findPurchase(purchaseId, user.id);
+  }
+
   /** "Ya pagué" for orders paid with QR (test mode only, see OrdersService.confirmPayment). Only someone who can see the order. */
   @Post(':id/payment/confirm')
   @UseGuards(UserGuard)

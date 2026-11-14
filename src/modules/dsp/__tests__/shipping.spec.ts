@@ -1,6 +1,6 @@
 import { distanceKm, effectiveRates, shippingPrice } from '../shipping';
 
-const rates = { baseFare: 8, perKm: 2.5, minDistanceKm: 1.2 };
+const rates = { baseFare: 8, perKm: 2.5, minDistanceKm: 1.2, extraStopFee: 4 };
 
 describe('shipping tariff', () => {
   it('charges base fare plus rate per km', () => {

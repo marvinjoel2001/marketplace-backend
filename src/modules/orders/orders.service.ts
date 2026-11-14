@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import { Interval } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DspService } from '../dsp/dsp.service';
+import { MAX_STORES_PER_PURCHASE } from '../dsp/shipping';
 import { NotificationsService, type OrderEvent } from '../notifications/notifications.service';
 import { effectivePrice } from '../products/pricing';
 import { parseVariants } from '../products/variants';
@@ -33,6 +34,13 @@ export interface CreateOrderDto {
   paymentMethod?: string;
   deliveryAt?: string;
   items: { productOfferId?: string; quantity?: number | string; variant?: string }[];
+}
+
+/** An order's part of a purchase made in one checkout. */
+interface PurchaseShare {
+  purchaseId: string;
+  shippingFee: number;
+  combinedDelivery: boolean;
 }
 
 @Injectable()
@@ -90,6 +98,101 @@ export class OrdersService {
    * delivery quote, never from the client; the delivery window must be one the store offers.
    */
   async create(data: CreateOrderDto) {
+    const prepared = await this.prepare(data);
+    const order = await this.prisma.$transaction((tx) => prepared.save(tx));
+    await this.notifications.notifyOrder(order, 'ORDER_CREATED');
+    await this.notifications.notifyStoreSale(order, prepared.store.ownerId);
+    return order;
+  }
+
+  /**
+   * One checkout for products from several stores. Every store gets its own order (it prepares, gets paid and can
+   * cancel on its own); they share a purchase id and are created together or not at all. When one trip through all
+   * the stores is cheaper than separate ones, the delivery is charged once and split between the orders.
+   */
+  async createPurchase(data: CreateOrderDto) {
+    const groups = await this.itemsByStore(data.items);
+    if (groups.length === 1) {
+      const order = await this.create(data);
+      return { purchaseId: null, combined: false, shippingTotal: order.shippingFee, separateTotal: order.shippingFee, orders: [order] };
+    }
+    const prepared: Awaited<ReturnType<OrdersService['prepare']>>[] = [];
+    for (const group of groups) {
+      try {
+        prepared.push(await this.prepare({ ...data, items: group.items }));
+      } catch (error) {
+        // Say which store the problem is in: the customer is looking at several.
+        if (error instanceof BadRequestException) throw new BadRequestException(`${group.storeName}: ${error.message}`);
+        throw error;
+      }
+    }
+    const shipping = await this.dspService.getPurchaseQuote(
+      prepared.map((p) => p.store),
+      { lat: prepared[0].lat, lng: prepared[0].lng },
+    );
+    const purchaseId = `CP-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
+    const orders = await this.prisma.$transaction(async (tx) => {
+      const created: Awaited<ReturnType<(typeof prepared)[number]['save']>>[] = [];
+      for (const p of prepared)
+        created.push(await p.save(tx, { purchaseId, shippingFee: shipping.fees[p.store.id], combinedDelivery: shipping.combined }));
+      return created;
+    });
+    for (const [i, order] of orders.entries()) {
+      await this.notifications.notifyOrder(order, 'ORDER_CREATED');
+      await this.notifications.notifyStoreSale(order, prepared[i].store.ownerId);
+    }
+    return { purchaseId, combined: shipping.combined, shippingTotal: shipping.total, separateTotal: shipping.separateTotal, orders };
+  }
+
+  /** What delivery will cost for a cart from several stores, before the customer confirms. */
+  async quotePurchase(data: { items?: CreateOrderDto['items']; customerLat?: number | string; customerLng?: number | string }) {
+    const lat = Number(data.customerLat);
+    const lng = Number(data.customerLng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new BadRequestException('Marca tu dirección en el mapa');
+    const groups = await this.itemsByStore(data.items);
+    const shipping = await this.dspService.getPurchaseQuote(groups.map((g) => g.store), { lat, lng });
+    return {
+      combined: shipping.combined,
+      total: shipping.total,
+      separateTotal: shipping.separateTotal,
+      stores: groups.map((g) => ({ storeId: g.store.id, storeName: g.storeName, fee: shipping.fees[g.store.id] })),
+    };
+  }
+
+  /** The orders of one purchase, for the customer who made it. */
+  async findPurchase(purchaseId: string, userId: string) {
+    const orders = await this.prisma.order.findMany({
+      where: { purchaseId, userId },
+      include: { items: { include: { store: { select: { id: true, name: true, slug: true, logo: true } } } } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!orders.length) throw new NotFoundException('Compra no encontrada');
+    return { purchaseId, combined: orders.some((o) => o.combinedDelivery), orders };
+  }
+
+  /** Splits cart lines by the store that sells them. */
+  private async itemsByStore(items: CreateOrderDto['items'] | undefined) {
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) throw new BadRequestException('El carrito no tiene productos');
+    const ids = [...new Set(list.map((item) => String(item.productOfferId ?? '')))];
+    const offers = await this.prisma.productOffer.findMany({ where: { id: { in: ids } }, select: { id: true, store: true } });
+    if (offers.length !== ids.length || offers.some((o) => o.store.status !== 'ACTIVE'))
+      throw new BadRequestException('Algún producto del carrito ya no está disponible');
+    const storeOf = new Map(offers.map((o) => [o.id, o.store]));
+    const groups = new Map<string, { store: (typeof offers)[number]['store']; storeName: string; items: CreateOrderDto['items'] }>();
+    for (const item of list) {
+      const store = storeOf.get(String(item.productOfferId ?? ''))!;
+      const group = groups.get(store.id) ?? { store, storeName: store.name, items: [] };
+      group.items.push(item);
+      groups.set(store.id, group);
+    }
+    if (groups.size > MAX_STORES_PER_PURCHASE)
+      throw new BadRequestException(`Puedes juntar productos de hasta ${MAX_STORES_PER_PURCHASE} tiendas en una compra`);
+    return [...groups.values()];
+  }
+
+  /** Checks one store's order and returns how to save it; nothing is written until `save` runs in a transaction. */
+  private async prepare(data: CreateOrderDto) {
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) throw new BadRequestException('El carrito no tiene productos');
 
@@ -188,7 +291,8 @@ export class OrdersService {
     const orderNumber = `VT-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 900 + 100)}`;
 
     // Stock is taken inside the transaction and only if it is still there, so two buyers can't get the last unit.
-    const order = await this.prisma.$transaction(async (tx) => {
+    const save = async (tx: Prisma.TransactionClient, purchase?: PurchaseShare) => {
+      const fee = purchase?.shippingFee ?? shippingFee;
       const created = await tx.order.create({
         data: {
           orderNumber,
@@ -203,8 +307,10 @@ export class OrdersService {
           paymentMethod,
           paymentStatus: 'PENDING',
           subtotal,
-          shippingFee,
-          totalAmount: Math.round((subtotal + shippingFee) * 100) / 100,
+          shippingFee: fee,
+          totalAmount: Math.round((subtotal + fee) * 100) / 100,
+          purchaseId: purchase?.purchaseId ?? null,
+          combinedDelivery: purchase?.combinedDelivery ?? false,
           platformCommission,
           vendorEarnings,
           status: 'SCHEDULED',
@@ -248,10 +354,8 @@ export class OrdersService {
           throw new ConflictException(`Alguien acaba de comprar "${e.offer.product.title}". Revisa tu carrito e inténtalo otra vez.`);
       }
       return created;
-    });
-    await this.notifications.notifyOrder(order, 'ORDER_CREATED');
-    await this.notifications.notifyStoreSale(order, store.ownerId);
-    return order;
+    };
+    return { store, lat, lng, save };
   }
 
   /**
@@ -266,11 +370,19 @@ export class OrdersService {
     if (order.paymentMethod !== 'QR_PREPAID') throw new BadRequestException('Este pedido se paga al recibir');
     if (order.status === 'CANCELLED') throw new BadRequestException('Este pedido fue cancelado');
     if (order.paymentStatus === 'PAID') return this.findByIdOrNumber(order.id);
-    const updated = await this.prisma.order.update({
-      where: { id: order.id },
-      data: { paymentStatus: 'PAID', paidAt: new Date() },
-    });
-    await this.notifications.notifyOrder(updated, 'PAYMENT_CONFIRMED');
+    // A purchase from several stores is paid once: its other QR orders are marked paid with this one.
+    const together = order.purchaseId
+      ? await this.prisma.order.findMany({
+          where: { purchaseId: order.purchaseId, paymentMethod: 'QR_PREPAID', paymentStatus: { not: 'PAID' }, status: { not: 'CANCELLED' } },
+        })
+      : [order];
+    for (const one of together) {
+      const updated = await this.prisma.order.update({
+        where: { id: one.id },
+        data: { paymentStatus: 'PAID', paidAt: new Date() },
+      });
+      await this.notifications.notifyOrder(updated, 'PAYMENT_CONFIRMED');
+    }
     return this.findByIdOrNumber(order.id);
   }
 
@@ -328,7 +440,11 @@ export class OrdersService {
       ? await this.prisma.store.findUnique({ where: { id: order.storeId } })
       : null;
     if (!store) return null;
+    const together = order.combinedDelivery && order.purchaseId
+      ? await this.prisma.order.count({ where: { purchaseId: order.purchaseId, status: { not: 'CANCELLED' } } })
+      : 0;
     const response = await this.dspService.dispatchOrder({
+      routeNote: together > 1 ? `RUTA COMBINADA ${order.purchaseId}: ${together} pedidos del mismo cliente, van en un solo viaje` : null,
       quoteId: order.dspQuoteId || `dsp_q_${Date.now()}`,
       orderNumber: order.orderNumber,
       customerName: order.customerName,

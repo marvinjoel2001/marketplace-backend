@@ -175,6 +175,53 @@ describe('OrdersService', () => {
       expect(mockNotifications.notifyStoreSale).toHaveBeenCalledWith(expect.objectContaining({ storeId: 'store-1' }), 'seller');
     });
 
+    describe('compra de varias tiendas', () => {
+      const store2 = { ...store, id: 'store-2', name: 'Calzados Sur', ownerId: 'seller-2' };
+      const offer2 = { ...offer, id: 'off-2', storeId: 'store-2', price: 50, salePrice: null, isFlashSale: false, product: { title: 'Producto B', images: '[]' }, store: store2 };
+      const purchase = {
+        ...base,
+        deliveryAt: '2026-11-02T16:00:00.000Z',
+        items: [{ productOfferId: 'off-1', quantity: 2 }, { productOfferId: 'off-2', quantity: 1 }],
+      };
+      const offersInStock = (list: unknown[]) =>
+        mockPrisma.productOffer.findMany.mockImplementation(({ where }: any) =>
+          Promise.resolve((list as { id: string }[]).filter((o) => where.id.in.includes(o.id))),
+        );
+
+      beforeEach(() => {
+        offersInStock([offer, offer2]);
+        (mockDspService as any).getPurchaseQuote = jest.fn().mockResolvedValue({
+          combined: true, total: 22, separateTotal: 34, fees: { 'store-1': 10, 'store-2': 12 }, pickupOrder: ['store-2', 'store-1'], distanceKm: 4,
+        });
+      });
+
+      it('crea un pedido por tienda en la misma compra y reparte el envío combinado', async () => {
+        const result: any = await service.createPurchase(purchase);
+
+        expect(result.purchaseId).toMatch(/^CP-/);
+        expect(result).toMatchObject({ combined: true, shippingTotal: 22, separateTotal: 34 });
+        expect(result.orders).toHaveLength(2);
+        expect(result.orders[0]).toMatchObject({ storeId: 'store-1', purchaseId: result.purchaseId, combinedDelivery: true, subtotal: 160, shippingFee: 10, totalAmount: 170 });
+        expect(result.orders[1]).toMatchObject({ storeId: 'store-2', purchaseId: result.purchaseId, combinedDelivery: true, subtotal: 50, shippingFee: 12, totalAmount: 62 });
+        // Todo en una sola transacción: o se crean los dos pedidos o ninguno.
+        expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+        expect(mockNotifications.notifyStoreSale).toHaveBeenCalledWith(expect.objectContaining({ storeId: 'store-2' }), 'seller-2');
+      });
+
+      it('si una tienda no tiene stock no se crea ningún pedido y dice cuál tienda', async () => {
+        offersInStock([offer, { ...offer2, stock: 0 }]);
+        await expect(service.createPurchase(purchase)).rejects.toThrow('Calzados Sur: Solo quedan 0 de "Producto B"');
+        expect(mockPrisma.order.create).not.toHaveBeenCalled();
+      });
+
+      it('con productos de una sola tienda es un pedido normal, sin compra', async () => {
+        const result: any = await service.createPurchase({ ...purchase, items: [purchase.items[0]] });
+        expect(result).toMatchObject({ purchaseId: null, combined: false });
+        expect(result.orders).toHaveLength(1);
+        expect(result.orders[0].shippingFee).toBe(15);
+      });
+    });
+
     it('no vende la última unidad dos veces: si otro comprador la tomó, el pedido falla', async () => {
       mockPrisma.productOffer.updateMany.mockResolvedValue({ count: 0 });
       await expect(service.create({ ...base, deliveryAt: '2026-11-02T16:00:00.000Z' })).rejects.toThrow('Alguien acaba de comprar');

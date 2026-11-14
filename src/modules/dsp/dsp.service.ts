@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
-import { distanceKm, effectiveRates, shippingPrice } from './shipping';
+import { distanceKm, effectiveRates, purchaseShipping, shippingPrice, type Point, type PurchaseShipping } from './shipping';
 
 export interface DSPQuoteRequest {
   pickupLat: number;
@@ -41,6 +41,8 @@ export interface DSPOrderRequest {
   /** Start of the delivery window the customer chose, and its label ("10:00 - 11:00"). */
   deliveryAt?: Date | null;
   deliveryWindow?: string | null;
+  /** For a purchase delivered in one trip: tells the driver which stop this is, e.g. "RUTA COMBINADA CP-1: recojo 1 de 2". */
+  routeNote?: string | null;
 }
 
 export interface DSPOrderResponse {
@@ -100,6 +102,22 @@ export class DspService {
     };
   }
 
+  /**
+   * Delivery price for a purchase from several stores: one combined trip when that is cheaper and every store
+   * delivers with OpenDSP drivers, otherwise one trip per store. Always the platform tariff.
+   */
+  async getPurchaseQuote(
+    stores: { id: string; latitude: number; longitude: number; shippingBaseFare?: number | null; shippingPerKm?: number | null; openDspEnabled?: boolean }[],
+    dropoff: Point,
+  ): Promise<PurchaseShipping> {
+    const defaults = await this.settings.getShipping();
+    return purchaseShipping(
+      stores.map((s) => ({ storeId: s.id, point: { lat: s.latitude, lng: s.longitude }, rates: effectiveRates(defaults, s) })),
+      dropoff,
+      stores.every((s) => s.openDspEnabled !== false),
+    );
+  }
+
   private async coreQuote(params: DSPQuoteRequest): Promise<DSPQuoteResponse | null> {
     try {
       const response = await fetch(`${this.dspApiUrl}/quotes`, {
@@ -151,6 +169,7 @@ export class DspService {
         dropoffLat: params.customerLat,
         dropoffLng: params.customerLng,
         packageNotes: [
+          params.routeNote,
           params.deliveryAt && `ENTREGAR ${promisedLabel(params.deliveryAt, params.deliveryWindow)}`,
           `Cliente: ${params.customerName} (${params.customerPhone})`,
           `Pedido #${params.orderNumber}`,

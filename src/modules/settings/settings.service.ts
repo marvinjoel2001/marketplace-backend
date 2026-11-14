@@ -6,9 +6,11 @@ export interface ShippingRates {
   baseFare: number;
   perKm: number;
   minDistanceKm: number;
+  /** Added once for every extra store a driver visits on a combined delivery. */
+  extraStopFee: number;
 }
 
-export const DEFAULT_SHIPPING: ShippingRates = { baseFare: 8, perKm: 2.5, minDistanceKm: 1.2 };
+export const DEFAULT_SHIPPING: ShippingRates = { baseFare: 8, perKm: 2.5, minDistanceKm: 1.2, extraStopFee: 4 };
 
 export type WhatsAppDriver = 'LOG' | 'WAHA' | 'EVOLUTION';
 
@@ -89,6 +91,7 @@ export class SettingsService {
       baseFare: nonNegative(input.baseFare, current.baseFare),
       perKm: nonNegative(input.perKm, current.perKm),
       minDistanceKm: nonNegative(input.minDistanceKm, current.minDistanceKm),
+      extraStopFee: nonNegative(input.extraStopFee, current.extraStopFee),
     };
     await this.set(KEYS.shipping, next);
     return next;

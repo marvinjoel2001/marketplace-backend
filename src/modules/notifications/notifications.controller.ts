@@ -1,18 +1,20 @@
-import { Controller, Get, Param, Post } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
+import { CurrentUser, SessionUser, UserGuard } from '../auth/user.guard';
 
-// Same access model as GET /orders/user/:userId: the web asks with the id of the signed-in customer.
+/** Each person reads only their own notifications: the id comes from the session, never from the URL. */
 @Controller('notifications')
+@UseGuards(UserGuard)
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
 
-  @Get('user/:userId')
-  list(@Param('userId') userId: string) {
-    return this.notifications.forUser(userId);
+  @Get('mine')
+  list(@CurrentUser() user: SessionUser) {
+    return this.notifications.forUser(user.id);
   }
 
-  @Post('user/:userId/read')
-  markRead(@Param('userId') userId: string) {
-    return this.notifications.markAllRead(userId);
+  @Post('mine/read')
+  markRead(@CurrentUser() user: SessionUser) {
+    return this.notifications.markAllRead(user.id);
   }
 }

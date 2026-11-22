@@ -31,7 +31,7 @@ El vendedor acaba de tomar una foto de un producto para publicarlo. Llena la fic
 - audience: para quién es. Usa "Todos" para cosas que no son de una persona en particular (electrodomésticos, herramientas, hogar).
 - condition: NUEVO si se ve en su empaque o sin uso; SEMINUEVO si está casi como nuevo; USADO si tiene señales claras de uso.
 - colors: colores visibles del producto (no del fondo), en español, máximo 4.
-- description: 1 o 2 frases simples y honestas de lo que se ve. No inventes garantías, envíos ni características que no se ven.
+- description: 1 o 2 frases como las escribiría el vendedor en su publicación: qué es el producto y sus características (marca, modelo, sabor, material, medida, estado del empaque). Habla del producto, nunca de la foto: no uses "se ve", "se aprecia", "se observa", "aparece", "en la foto", "en la imagen" ni "en la etiqueta". Ej.: "Cajetilla de cigarrillos Bohem Double sabor mentolado. Empaque cerrado, con advertencia sanitaria." No inventes garantías, envíos ni características que no puedas confirmar.
 - details: de 2 a 6 datos útiles según el TIPO de producto, solo si se ven o se deducen con seguridad de la foto o la etiqueta. Ejemplos: ropa → material, corte; calzado → material, tipo de suela; electrodoméstico → marca, modelo, potencia, voltaje, capacidad; herramienta → marca, potencia, voltaje, inalámbrica o con cable; perfume → marca, contenido (ml), tipo (eau de parfum, eau de toilette); juguete → edad recomendada, material; mueble → material, medidas aproximadas; tecnología → marca, modelo, almacenamiento.
 - variantAxis: cómo se llamarían las opciones si una tienda normalmente vende este producto en varias versiones: "Talla" (ropa), "Número" (calzado), "Edad" (ropa de niños), "Medida", "Color", "Capacidad", "Voltaje", "Presentación" (ml o gramos), "Modelo". Deja "" si lo normal es una sola versión (la mayoría de electrodomésticos, herramientas y muebles).
 - variantOptions: las opciones típicas para ese eje en Bolivia (ej. tallas S, M, L, XL; números 36 a 42). Vacío si variantAxis es "".
@@ -252,6 +252,19 @@ export class PhotoAiService {
   }
 }
 
+/** Sentences that narrate the photo ("Se ve…", "En la imagen…") instead of describing the product. */
+const PHOTO_NARRATION = /\b(se (ve|ven|aprecia|aprecian|observa|observan|nota|notan|distingue)|aparece(n)?|en (la|esta) (foto|fotograf[ií]a|imagen)|la (foto|imagen) (muestra|se ve))\b/i;
+
+/**
+ * Keeps the description about the product: drops sentences that describe the picture, unless that
+ * would leave nothing (then the model's text stays, for the seller to edit).
+ */
+export function productDescription(text: string): string {
+  const sentences = text.trim().match(/[^.!?]+[.!?]*/g)?.map((s) => s.trim()).filter(Boolean) ?? [];
+  const kept = sentences.filter((s) => !PHOTO_NARRATION.test(s));
+  return (kept.length ? kept.join(' ') : text).trim();
+}
+
 /** Turns the model's answer into what the seller form receives, trimming every field to safe sizes. */
 export function toSuggestion(out: ModelOutput, categories: Category[]): PhotoSuggestion {
   const category = categories.find((c) => c.slug === out.category) ?? null;
@@ -265,7 +278,7 @@ export function toSuggestion(out: ModelOutput, categories: Category[]): PhotoSug
     audience: out.audience,
     condition: out.condition,
     colors: out.colors.map((c) => c.trim()).filter(Boolean).slice(0, 4),
-    description: out.description.trim().slice(0, 600),
+    description: productDescription(out.description).slice(0, 600),
     details: out.details.filter((d) => d.name.trim() && d.value.trim()).slice(0, 6),
     variantAxis: axis,
     variantOptions: axis ? Array.from(new Set<string>(out.variantOptions.map((o) => o.trim()).filter(Boolean))).slice(0, 20) : [],

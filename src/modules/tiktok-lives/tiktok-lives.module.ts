@@ -28,6 +28,6 @@ import { SellerSignalsService } from './seller-signals.service';
     LiveFeedService,
     SellerSignalsService,
   ],
-  exports: [TikTokLivesService],
+  exports: [TikTokLivesService, TikTokLivesWorker],
 })
 export class TikTokLivesModule {}

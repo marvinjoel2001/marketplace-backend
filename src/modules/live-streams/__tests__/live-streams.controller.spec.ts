@@ -2,6 +2,8 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { LiveStreamsController } from '../live-streams.controller';
 import { LiveStreamsService } from '../live-streams.service';
+import { TikTokLivesService } from '../../tiktok-lives/tiktok-lives.service';
+import { TikTokLivesWorker } from '../../tiktok-lives/tiktok-lives.worker';
 
 describe('LiveStreamsController', () => {
   let controller: LiveStreamsController;
@@ -28,6 +30,9 @@ describe('LiveStreamsController', () => {
     ),
   };
 
+  const tiktokLives = { linkStoreAccount: jest.fn().mockResolvedValue('techplus_bo') };
+  const tiktokWorker = { checkStore: jest.fn() };
+
   const owner = { id: 'owner_1', role: 'VENDOR' };
   const mockPrisma = { store: { findFirst: jest.fn().mockResolvedValue({ id: 'store_1', slug: 'store_1', ownerId: 'owner_1' }) } };
 
@@ -40,6 +45,8 @@ describe('LiveStreamsController', () => {
           useValue: mockLiveStreamsService,
         },
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: TikTokLivesService, useValue: tiktokLives },
+        { provide: TikTokLivesWorker, useValue: tiktokWorker },
       ],
     }).compile();
 
@@ -70,6 +77,9 @@ describe('LiveStreamsController', () => {
       const result = await controller.create(dto, owner);
       expect(result.id).toBe('live_new');
       expect(service.create).toHaveBeenCalledWith(dto);
+      // The typed TikTok username is linked before the sale opens, then looked for right away.
+      expect(tiktokLives.linkStoreAccount).toHaveBeenCalledWith('store_1');
+      expect(tiktokWorker.checkStore).toHaveBeenCalledWith('store_1');
     });
   });
 

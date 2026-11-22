@@ -37,7 +37,8 @@ export class TikTokLivesController {
   @Get('room/:username')
   async room(@Param('username') username: string) {
     const room = await this.lives.room(username);
-    const feed = room.live && room.isLive ? this.feeds.snapshot(room.username, room.live.room_id) : null;
+    // Only a room TikTok is broadcasting now has a chat; an old room would just fail to connect.
+    const feed = room.live && room.tiktokLive ? this.feeds.snapshot(room.username, room.live.room_id) : null;
     return { ...room, feed };
   }
 
@@ -45,7 +46,7 @@ export class TikTokLivesController {
   @Get('room/:username/feed')
   async feed(@Param('username') username: string, @Query('after') after?: string) {
     const room = await this.lives.room(username);
-    if (!room.live || !room.isLive) return { status: 'ended', viewers: null, likes: null, shares: 0, comments: [], pins: [], products: [] };
+    if (!room.live || !room.tiktokLive) return { status: 'ended', viewers: null, likes: null, shares: 0, comments: [], pins: [], products: [] };
     return this.feeds.snapshot(room.username, room.live.room_id, after);
   }
 

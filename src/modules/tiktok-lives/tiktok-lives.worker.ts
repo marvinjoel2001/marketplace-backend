@@ -185,6 +185,45 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
   }
 
   /**
+   * Stores that opened a sale in Vitrina are waiting for their TikTok live: look every 30s instead
+   * of every 3 min, so the room shows the broadcast soon after the seller starts it in TikTok.
+   * Rooms already verified recently are kept fresh by refreshActive.
+   */
+  @Interval(30000)
+  async waitingStores(): Promise<void> {
+    if (!this.config.enabled || this.stopping) return;
+    await this.cache.withLease('waiting', async (owned) => {
+      const fresh = new Date(Date.now() - REVERIFY_AFTER_SECONDS * 1000);
+      const accounts = await this.prisma.tikTokAccount.findMany({
+        where: {
+          store: {
+            status: 'ACTIVE',
+            liveStreams: { some: { status: 'LIVE' } },
+            discoveredLives: { none: { status: 'ACTIVE', verifiedAt: { gte: fresh } } },
+          },
+        },
+        include: { store: true },
+      });
+      await this.each(accounts, owned, (account) => {
+        const username = normalizeUsername(account.username);
+        return username ? this.verify(username, undefined, account.store, owned, true) : Promise.resolve();
+      });
+    });
+  }
+
+  /** Looks for this store's TikTok live right away (the seller just opened a sale). */
+  checkStore(storeId: string): void {
+    if (!this.config.enabled || this.stopping) return;
+    void this.prisma.tikTokAccount
+      .findUnique({ where: { storeId }, include: { store: true } })
+      .then((account) => {
+        const username = normalizeUsername(account?.username);
+        if (account && username) return this.verify(username, undefined, account.store, undefined, true);
+      })
+      .catch(() => this.logger.warn('No se pudo revisar el live de una tienda'));
+  }
+
+  /**
    * Sellers found before go live again almost daily, and TikTok's public feed only shows a few per
    * visit (LIVE search needs a login). Re-probe ended, previously listed sellers in rotation,
    * least recently checked first; markEnded bumps updatedAt so the rotation advances.
@@ -256,13 +295,15 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
     candidate?: LiveCandidate,
     store?: { id: string; category: string; address: string; status?: string },
     owned = () => true,
+    /** A Vitrina store waiting for its live: one account, so it doesn't wait out the global pause. */
+    waiting = false,
   ): Promise<void> {
     if (
       this.stopping ||
       !owned() ||
       this.checking.has(username) ||
       !this.accountRetry.ready(username) ||
-      !this.retry.ready('probes')
+      (!waiting && !this.retry.ready('probes'))
     )
       return;
     this.checking.add(username);

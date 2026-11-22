@@ -220,6 +220,42 @@ export class TikTokLivesService {
     };
   }
 
+  /**
+   * Links the TikTok username the seller typed in their own store, so the reviewer starts looking
+   * for that account's live. Called when the owner opens a sale; ownership is still unverified.
+   * Returns the linked username, or null when the store has none.
+   */
+  async linkStoreAccount(storeId: string): Promise<string | null> {
+    const store = await this.prisma.store.findUnique({ where: { id: storeId } });
+    const username = normalizeUsername(store?.tiktokUsername);
+    if (!store || store.status !== 'ACTIVE' || !username) return null;
+    const current = await this.prisma.tikTokAccount.findUnique({ where: { storeId } });
+    if (current?.username === username) return username;
+    const taken = await this.prisma.tikTokAccount.findUnique({ where: { username } });
+    if (taken && taken.storeId !== storeId)
+      throw new BadRequestException('Esa cuenta de TikTok ya está vinculada a otra tienda');
+    try {
+      await this.prisma.$transaction([
+        this.prisma.tikTokAccount.upsert({
+          where: { storeId },
+          create: { storeId, username, countryCode: this.config.country },
+          update: { username, countryCode: this.config.country },
+        }),
+        // A live seen under the previous username no longer belongs to this store.
+        this.prisma.tikTokLive.updateMany({
+          where: { storeId, username: { not: username } },
+          data: { status: 'ENDED' },
+        }),
+      ]);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2002')
+        throw new BadRequestException('Esa cuenta de TikTok ya está vinculada a otra tienda');
+      throw error;
+    }
+    await this.cache.invalidate();
+    return username;
+  }
+
   async saveVerified(
     live: LiveCandidate,
     store?: { id: string; category: string; address: string },
@@ -325,7 +361,10 @@ export class TikTokLivesService {
       : [];
     return {
       username,
+      // A sale opened in Vitrina keeps the room open (products to buy) while TikTok isn't seen yet.
       isLive: isLive || Boolean(store?.liveStreams.length),
+      /** TikTok itself is broadcasting this room now: only then is there a video and a chat to show. */
+      tiktokLive: isLive,
       live: row ? this.serialize(row) : null,
       store: store
         ? {

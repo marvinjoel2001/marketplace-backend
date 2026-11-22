@@ -2,12 +2,16 @@ import { Controller, Get, Post, Query, Body, Param, UseGuards, NotFoundException
 import { LiveStreamsService } from './live-streams.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CurrentUser, SessionUser, UserGuard, ownedStore } from '../auth/user.guard';
+import { TikTokLivesService } from '../tiktok-lives/tiktok-lives.service';
+import { TikTokLivesWorker } from '../tiktok-lives/tiktok-lives.worker';
 
 @Controller('live-streams')
 export class LiveStreamsController {
   constructor(
     private readonly liveStreamsService: LiveStreamsService,
     private readonly prisma: PrismaService,
+    private readonly tiktokLives: TikTokLivesService,
+    private readonly tiktokWorker: TikTokLivesWorker,
   ) {}
 
   @Get()
@@ -19,7 +23,12 @@ export class LiveStreamsController {
   @UseGuards(UserGuard)
   async create(@Body() body: any, @CurrentUser() user: SessionUser) {
     const store = await ownedStore(this.prisma, String(body?.storeId ?? ''), user.id);
-    return this.liveStreamsService.create({ ...body, storeId: store.id });
+    // The reviewer only looks for linked accounts: link the username the seller typed before
+    // opening the sale (fails early if another store already uses it), then look for the live now.
+    await this.tiktokLives.linkStoreAccount(store.id);
+    const stream = await this.liveStreamsService.create({ ...body, storeId: store.id });
+    this.tiktokWorker.checkStore(store.id);
+    return stream;
   }
 
   @Post(':id/start')

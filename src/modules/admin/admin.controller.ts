@@ -15,7 +15,7 @@ import { AdminService } from './admin.service';
 import { AdminInsightsService } from './admin-insights.service';
 import { AdminGuard } from './admin.guard';
 import {
-  SettingsService, ShippingRates, VISION_KEY_ENV, VISION_MODELS, VisionAiSettings, VisionProvider, WhatsAppSettings, visionProvider,
+  SettingsService, ShippingRates, SupportSettings, VISION_KEY_ENV, VISION_MODELS, VisionAiSettings, VisionProvider, WhatsAppSettings, visionProvider,
 } from '../settings/settings.service';
 import { PhotoAiService } from '../products/photo-ai.service';
 import { WhatsAppService } from '../auth/whatsapp.service';
@@ -147,6 +147,17 @@ export class AdminController {
     if (!phone) throw new BadRequestException('Escribe un celular boliviano de 8 dígitos');
     const sent = await this.whatsapp.send(phone, 'Mensaje de prueba de Vitrina Market: tu WhatsApp quedó conectado.');
     return { sent: sent.delivered, devOnly: Boolean(sent.devOnly) };
+  }
+
+  // Support line for stores (the "Habla con soporte" button in the store panel).
+  @Get('support')
+  getSupport() {
+    return this.settings.getSupport();
+  }
+
+  @Put('support')
+  setSupport(@Body() body: Partial<SupportSettings>) {
+    return this.settings.setSupport(body ?? {});
   }
 
   // The key never goes back to the browser: only whether one is saved and its last characters.

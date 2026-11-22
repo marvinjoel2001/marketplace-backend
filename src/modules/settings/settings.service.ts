@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -56,7 +56,36 @@ interface StoredVisionAi {
   deployApiKey?: string;
 }
 
-const KEYS = { shipping: 'shipping', whatsapp: 'whatsapp', visionAi: 'vision_ai', secret: 'token_secret', notificationsSeen: 'admin_notifications_seen_at' } as const;
+/** The WhatsApp line stores use to talk to Vitrina's support team. */
+export interface SupportSettings {
+  /** Digits with country code, as wa.me expects them (59171234567). Empty: no support line yet. */
+  whatsapp: string;
+  /** Opening text of the chat; {tienda} becomes the store's name. */
+  message: string;
+  /** When someone answers, shown next to the button ("Lunes a sábado, 9:00 a 19:00"). */
+  hours: string;
+}
+
+export const DEFAULT_SUPPORT_MESSAGE = 'Hola, te escribo de {tienda} en Vitrina. Necesito ayuda con:';
+
+/**
+ * Reads a support number: a Bolivian cell (71234567, +591 7123 4567) or any number written with its
+ * country code (+54 9 11 1234 5678). Returns the digits wa.me expects, or null when it can't be one.
+ */
+export function supportWhatsApp(input: string): string | null {
+  const text = input.trim();
+  const digits = text.replace(/\D/g, '');
+  if (/^[67]\d{7}$/.test(digits)) return `591${digits}`;
+  if (/^591[67]\d{7}$/.test(digits)) return digits;
+  // Other countries only when written with "+" (or 00), so a mistyped local number isn't sent abroad.
+  if (/^(\+|00)/.test(text)) {
+    const international = text.startsWith('00') ? digits.slice(2) : digits;
+    if (/^[1-9]\d{9,14}$/.test(international)) return international;
+  }
+  return null;
+}
+
+const KEYS = { shipping: 'shipping', whatsapp: 'whatsapp', visionAi: 'vision_ai', support: 'support', secret: 'token_secret', notificationsSeen: 'admin_notifications_seen_at' } as const;
 
 /** Platform-wide settings kept in the AppSetting table, with env fallbacks where an operator would set them at deploy time. */
 @Injectable()
@@ -149,6 +178,38 @@ export class SettingsService {
     };
     await this.set(KEYS.visionAi, next);
     return this.getVisionAi();
+  }
+
+  async getSupport(): Promise<SupportSettings> {
+    const saved = (await this.get<Partial<SupportSettings>>(KEYS.support)) ?? {};
+    return {
+      whatsapp: saved.whatsapp ?? '',
+      message: saved.message?.trim() || DEFAULT_SUPPORT_MESSAGE,
+      hours: saved.hours ?? '',
+    };
+  }
+
+  async setSupport(input: Partial<SupportSettings>): Promise<SupportSettings> {
+    const current = await this.getSupport();
+    let whatsapp = current.whatsapp;
+    if (input.whatsapp !== undefined) {
+      const raw = String(input.whatsapp ?? '').trim();
+      // An empty field removes the line: stores stop seeing the button.
+      if (!raw) whatsapp = '';
+      else {
+        const parsed = supportWhatsApp(raw);
+        if (!parsed)
+          throw new BadRequestException('Escribe un celular boliviano de 8 dígitos, o el número completo con + y código de país');
+        whatsapp = parsed;
+      }
+    }
+    const next: SupportSettings = {
+      whatsapp,
+      message: input.message === undefined ? current.message : String(input.message).trim().slice(0, 300) || DEFAULT_SUPPORT_MESSAGE,
+      hours: input.hours === undefined ? current.hours : String(input.hours).trim().slice(0, 80),
+    };
+    await this.set(KEYS.support, next);
+    return next;
   }
 
   /** Secret that signs admin tokens and hashes login codes. ADMIN_TOKEN_SECRET wins; otherwise one is generated once and persisted. */

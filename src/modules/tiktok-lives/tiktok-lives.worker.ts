@@ -211,15 +211,17 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
     });
   }
 
-  /** Looks for this store's TikTok live right away (the seller just opened a sale). */
+  /** Looks for a live on each of this store's TikTok accounts right away (a sale was opened or an account added). */
   checkStore(storeId: string): void {
     if (!this.config.enabled || this.stopping) return;
     void this.prisma.tikTokAccount
-      .findUnique({ where: { storeId }, include: { store: true } })
-      .then((account) => {
-        const username = normalizeUsername(account?.username);
-        if (account && username) return this.verify(username, undefined, account.store, undefined, true);
-      })
+      .findMany({ where: { storeId }, include: { store: true } })
+      .then((accounts) =>
+        this.each(accounts, () => !this.stopping, (account) => {
+          const username = normalizeUsername(account.username);
+          return username ? this.verify(username, undefined, account.store, undefined, true) : Promise.resolve();
+        }),
+      )
       .catch(() => this.logger.warn('No se pudo revisar el live de una tienda'));
   }
 
@@ -334,11 +336,8 @@ export class TikTokLivesWorker implements OnApplicationBootstrap, OnModuleDestro
             this.accountRetry.success(username);
             if (!result.live) {
               await this.lives.markEnded(username);
-              if (store)
-                await this.prisma.store.updateMany({
-                  where: { id: store.id },
-                  data: { isLiveNow: false },
-                });
+              // Only off when none of the store's accounts is broadcasting.
+              if (store) await this.lives.refreshStoreLive(store.id);
               await this.connector.unwatch(username);
               return;
             }

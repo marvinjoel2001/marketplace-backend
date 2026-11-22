@@ -121,7 +121,7 @@ export class AdminInsightsService {
   async stores() {
     const [stores, orders, payouts, defaults] = await Promise.all([
       this.prisma.store.findMany({
-        include: { _count: { select: { offers: true } }, registeredTikTokAccount: { select: { username: true } } },
+        include: { _count: { select: { offers: true } }, tiktokAccounts: { select: { username: true }, orderBy: { createdAt: 'asc' } } },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.order.findMany({
@@ -153,7 +153,8 @@ export class AdminInsightsService {
         longitude: store.longitude,
         phone: store.phone,
         tiktokUsername: store.tiktokUsername,
-        tiktokVerified: Boolean(store.tiktokUsername) && store.registeredTikTokAccount?.username === store.tiktokUsername,
+        tiktokVerified: Boolean(store.tiktokUsername) && store.tiktokAccounts.some((a) => a.username === store.tiktokUsername),
+        tiktokAccounts: store.tiktokAccounts.map((a) => a.username),
         status: store.status,
         statusReason: store.statusReason,
         createdAt: store.createdAt,

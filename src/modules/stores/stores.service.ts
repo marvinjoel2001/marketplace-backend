@@ -282,7 +282,8 @@ export class StoresService {
           slug: store.slug,
           name: store.name,
           logo: store.logo,
-          tiktokUsername: store.tiktokUsername,
+          // The account broadcasting now (a store may sell from several), else its main one.
+          tiktokUsername: tiktok?.username ?? store.tiktokUsername,
         },
         title: stream?.title || tiktok?.title || `${store.name} en vivo`,
         viewerCount: tiktok?.viewerCount ?? 0,

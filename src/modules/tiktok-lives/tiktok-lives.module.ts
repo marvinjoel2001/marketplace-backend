@@ -12,10 +12,12 @@ import { TikTokSessionController } from './tiktok-session.controller';
 import { LiveFeedService } from './live-feed.service';
 import { TikTokDiscoveryHealth } from './tiktok-discovery-health';
 import { SellerSignalsService } from './seller-signals.service';
+import { StoreTikTokAccountsService } from './store-tiktok-accounts.service';
+import { StoreTikTokAccountsController } from './store-tiktok-accounts.controller';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
-  controllers: [TikTokLivesController, TikTokSessionController],
+  controllers: [TikTokLivesController, TikTokSessionController, StoreTikTokAccountsController],
   providers: [
     TikTokDiscoveryHealth,
     TikTokLivesConfig,
@@ -27,6 +29,7 @@ import { SellerSignalsService } from './seller-signals.service';
     TikTokLivesWorker,
     LiveFeedService,
     SellerSignalsService,
+    StoreTikTokAccountsService,
   ],
   exports: [TikTokLivesService, TikTokLivesWorker],
 })

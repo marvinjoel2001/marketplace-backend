@@ -78,16 +78,19 @@ model Store {
   cashShifts     CashShift[]
   coupons        Coupon[]
   discoveredLives TikTokLive[]
-  registeredTikTokAccount TikTokAccount?
+  tiktokAccounts TikTokAccount[]
 }
 
 model TikTokAccount {
   username  String   @id
   countryCode String @default("BO")
-  storeId   String   @unique
+  storeId   String
   store     Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // A store can sell from several TikTok accounts; each account belongs to one store.
+  @@index([storeId])
 }
 
 model TikTokLive {

@@ -183,34 +183,8 @@ export class TikTokLivesService {
       throw new BadRequestException(
         'La cuenta TikTok ya está vinculada a otra tienda',
       );
-    try {
-      await this.prisma.$transaction([
-        this.prisma.tikTokAccount.upsert({
-          where: { storeId },
-          create: { storeId, username, countryCode: this.config.country },
-          update: { username, countryCode: this.config.country },
-        }),
-        this.prisma.store.update({
-          where: { id: storeId },
-          data: {
-            tiktokUsername: username,
-            tiktokLiveUrl: `https://www.tiktok.com/@${username}/live`,
-            isLiveNow: false,
-          },
-        }),
-        this.prisma.tikTokLive.updateMany({
-          where: { storeId },
-          data: { status: 'ENDED' },
-        }),
-      ]);
-    } catch (error) {
-      if ((error as { code?: string }).code === 'P2002')
-        throw new BadRequestException(
-          'La cuenta TikTok ya está vinculada a otra tienda',
-        );
-      throw error;
-    }
-    await this.cache.invalidate();
+    // Adds this account to the store's list; the store's other TikTok accounts stay linked.
+    await this.linkAccount(storeId, username);
     return {
       store_id: storeId,
       tiktok_username: username,
@@ -229,31 +203,36 @@ export class TikTokLivesService {
     const store = await this.prisma.store.findUnique({ where: { id: storeId } });
     const username = normalizeUsername(store?.tiktokUsername);
     if (!store || store.status !== 'ACTIVE' || !username) return null;
-    const current = await this.prisma.tikTokAccount.findUnique({ where: { storeId } });
-    if (current?.username === username) return username;
+    await this.linkAccount(storeId, username);
+    return username;
+  }
+
+  /** Adds one account to the store's TikTok accounts (keeping the others); fails if another store has it. */
+  private async linkAccount(storeId: string, username: string): Promise<void> {
     const taken = await this.prisma.tikTokAccount.findUnique({ where: { username } });
-    if (taken && taken.storeId !== storeId)
-      throw new BadRequestException('Esa cuenta de TikTok ya está vinculada a otra tienda');
+    if (taken?.storeId === storeId) return;
+    if (taken) throw new BadRequestException('Esa cuenta de TikTok ya está vinculada a otra tienda');
     try {
-      await this.prisma.$transaction([
-        this.prisma.tikTokAccount.upsert({
-          where: { storeId },
-          create: { storeId, username, countryCode: this.config.country },
-          update: { username, countryCode: this.config.country },
-        }),
-        // A live seen under the previous username no longer belongs to this store.
-        this.prisma.tikTokLive.updateMany({
-          where: { storeId, username: { not: username } },
-          data: { status: 'ENDED' },
-        }),
-      ]);
+      await this.prisma.tikTokAccount.create({
+        data: { storeId, username, countryCode: this.config.country },
+      });
     } catch (error) {
       if ((error as { code?: string }).code === 'P2002')
         throw new BadRequestException('Esa cuenta de TikTok ya está vinculada a otra tienda');
       throw error;
     }
+    // The first linked account is the store's main one (its default link).
+    await this.prisma.store.updateMany({
+      where: { id: storeId, tiktokUsername: null },
+      data: { tiktokUsername: username, tiktokLiveUrl: `https://www.tiktok.com/@${username}/live` },
+    });
     await this.cache.invalidate();
-    return username;
+  }
+
+  /** The store is live while any of its TikTok accounts is broadcasting. */
+  async refreshStoreLive(storeId: string): Promise<void> {
+    const live = await this.prisma.tikTokLive.count({ where: { storeId, status: 'ACTIVE' } });
+    await this.prisma.store.updateMany({ where: { id: storeId }, data: { isLiveNow: live > 0 } });
   }
 
   async saveVerified(
@@ -267,12 +246,8 @@ export class TikTokLivesService {
       const current = await this.prisma.store.findUnique({
         where: { id: store.id },
       });
-      if (
-        !current ||
-        current.status !== 'ACTIVE' ||
-        normalizeUsername(current.tiktokUsername) !== username
-      )
-        return;
+      // Any of the store's linked accounts counts, not only its main one.
+      if (!current || current.status !== 'ACTIVE') return;
       const account = await this.prisma.tikTokAccount.findUnique({
         where: { username },
       });
@@ -344,7 +319,12 @@ export class TikTokLivesService {
     const store = await this.prisma.store.findFirst({
       where: {
         status: 'ACTIVE',
-        OR: [{ tiktokUsername: username }, ...(row?.storeId ? [{ id: row.storeId }] : [])],
+        // The store this account is linked to (any of its accounts), its main username, or the live's store.
+        OR: [
+          { tiktokAccounts: { some: { username } } },
+          { tiktokUsername: username },
+          ...(row?.storeId ? [{ id: row.storeId }] : []),
+        ],
       },
       include: {
         offers: { where: { isActive: true }, include: { product: { include: { category: true } } } },
@@ -449,11 +429,8 @@ export class TikTokLivesService {
       where: { username, roomId: roomId ?? existing.roomId },
       data: { status: 'ENDED' },
     });
-    if (updated.count && existing.storeId)
-      await this.prisma.store.updateMany({
-        where: { id: existing.storeId, tiktokUsername: username },
-        data: { isLiveNow: false },
-      });
+    // Another of the store's accounts may still be broadcasting.
+    if (updated.count && existing.storeId) await this.refreshStoreLive(existing.storeId);
     await this.cache.invalidate();
   }
 

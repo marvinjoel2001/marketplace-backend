@@ -1,6 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { get, WEB_URL } from './api.js';
+import { authEnabled } from './tokens.js';
+import { registerAccountTools } from './account-tools.js';
 import { shapeLive, shapeProduct, shapeScraped, shapeStore } from './shape.js';
 
 type Json = Record<string, any>;
@@ -20,14 +22,16 @@ function safe<A>(fn: (args: A) => Promise<unknown>) {
   };
 }
 
-export function createServer() {
+/** `userId` is empty for anonymous callers: the account tools are still listed so the assistant offers sign-in when needed. */
+export function createServer(userId = '') {
   const server = new McpServer(
     { name: 'vitrina-market', version: '1.0.0' },
     {
       instructions:
         'Vitrina Market es un marketplace de tiendas de Bolivia (precios en bolivianos, BOB). ' +
         'Usa estas herramientas para buscar productos, ver ofertas, tiendas y lives. ' +
-        'No puedes comprar por el usuario: entrega el campo "url" del producto para que termine la compra en Vitrina.',
+        'Sin sesión solo puedes consultar. Con la cuenta conectada puedes cotizar, hacer pedidos y administrar la tienda del usuario. ' +
+        'Antes de place_order, delete_product o request_courier muestra un resumen y pide confirmación expresa. Entrega siempre el "url" del producto.',
     },
   );
 
@@ -147,5 +151,6 @@ export function createServer() {
     }),
   );
 
+  if (authEnabled) registerAccountTools(server, userId);
   return server;
 }

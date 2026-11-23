@@ -41,6 +41,7 @@ export function shapeProduct(p: Json) {
   const offers = (p.offers ?? [])
     .filter((o: Json) => o.isActive !== false)
     .map((o: Json) => ({
+      offerId: o.id,
       store: o.store?.name ?? null,
       storeSlug: o.store?.slug ?? null,
       ...priceOf(o),
@@ -54,6 +55,7 @@ export function shapeProduct(p: Json) {
   return {
     title: p.title,
     slug: p.slug,
+    productId: p.id,
     description: p.description ?? null,
     category: p.category?.name ?? null,
     condition: p.condition ?? null,

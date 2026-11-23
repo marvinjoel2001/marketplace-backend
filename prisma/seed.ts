@@ -27,6 +27,7 @@ async function main() {
     { name: 'Salud y Farmacia', slug: 'salud-y-farmacia', icon: 'HeartPulse', order: 9 },
     { name: 'Automotriz y Accesorios', slug: 'automotriz-y-accesorios', icon: 'Car', order: 10 },
     { name: 'Mascotas', slug: 'mascotas', icon: 'Dog', order: 11 },
+    { name: 'Licorerías', slug: 'licorerias', icon: 'Wine', order: 12 },
   ];
 
   const categories = [];
